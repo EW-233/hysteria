@@ -39,9 +39,10 @@ func TestClientConfig(t *testing.T) {
 		Transport: clientConfigTransport{
 			Type: "udp",
 			UDP: clientConfigTransportUDP{
-				HopInterval:    30 * time.Second,
-				MinHopInterval: 10 * time.Second,
-				MaxHopInterval: 50 * time.Second,
+				HandshakeMigration: clientConfigHandshakeMigration{Enabled: true, DataPort: 8443, Trigger: "auth_success", Fallback: true},
+				HopInterval:        30 * time.Second,
+				MinHopInterval:     10 * time.Second,
+				MaxHopInterval:     50 * time.Second,
 			},
 		},
 		Obfs: clientConfigObfs{
