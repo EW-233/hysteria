@@ -18,6 +18,8 @@ import (
 	"github.com/apernet/hysteria/core/v2/client"
 	"github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/bridge/tcpudp"
+	"github.com/apernet/hysteria/extras/v2/transport/packetframe"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -431,6 +433,85 @@ func TestWorkerHDMCLIHTTP(t *testing.T) {
 			}
 			require.EqualValues(t, 1, h.auth.calls.Load())
 			require.EqualValues(t, 1, h.tlsCalls.Load())
+		})
+	}
+}
+
+// TestWorkerHDMWebSocket 用真实 HY2 验证 WSS 消息边界、认证源切换及断桥后业务。
+func TestWorkerHDMWebSocket(t *testing.T) {
+	for _, ob := range []string{"plain", "salamander", "gecko"} {
+		t.Run(ob, func(t *testing.T) {
+			h := newRelayHarness(t, ob, false, true)
+			token := "test-worker-token-0123456789abcdef"
+			upgrade := websocket.Upgrader{}
+			wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/hdm/connect" || r.Header.Get("Authorization") != "Bearer "+token {
+					w.WriteHeader(401)
+					return
+				}
+				ws, err := upgrade.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer ws.Close()
+				ws.SetReadLimit(packetframe.MaxSize)
+				tcp, err := net.Dial("tcp", h.cfg.Transport.TCPBridge.Address)
+				if err != nil {
+					return
+				}
+				defer tcp.Close()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					defer ws.Close()
+					var b [packetframe.MaxSize]byte
+					for {
+						n, err := packetframe.Read(tcp, b[:])
+						if err != nil {
+							return
+						}
+						if ws.WriteMessage(websocket.BinaryMessage, b[:n]) != nil {
+							return
+						}
+					}
+				}()
+				for {
+					kind, b, err := ws.ReadMessage()
+					if err != nil || kind != websocket.BinaryMessage {
+						break
+					}
+					if packetframe.Write(tcp, b) != nil {
+						break
+					}
+				}
+				_ = tcp.Close()
+				<-done
+			}))
+			defer wsServer.Close()
+			h.cfg.Transport.Type = "worker"
+			h.cfg.Transport.Worker = clientConfigWorker{URL: "ws" + wsServer.URL[4:] + "/hdm/connect", Token: token}
+			echo := migrationTCPEcho(t)
+			udp := relayUDPEcho(t)
+			cfg := h.config(t)
+			c, _, err := client.NewClient(cfg)
+			require.NoError(t, err)
+			defer c.Close()
+			h.closeBridge(t)
+			stream, err := c.TCP(echo.Addr().String())
+			require.NoError(t, err)
+			defer stream.Close()
+			require.NoError(t, relayTCPExchange(stream, bytes.Repeat([]byte("WSS migration"), 8192)))
+			u, err := c.UDP()
+			require.NoError(t, err)
+			defer u.Close()
+			relayUDPExchange(t, u, udp.LocalAddr().String(), "after WSS bridge shutdown")
+			require.EqualValues(t, 1, h.auth.calls.Load())
+			require.EqualValues(t, 1, h.tlsCalls.Load())
+			require.Equal(t, "127.0.0.1", h.auth.source.Load())
+			require.Positive(t, h.observer.directPackets.Load())
+			if ob == "plain" {
+				require.Zero(t, h.observer.initials.Load())
+			}
 		})
 	}
 }

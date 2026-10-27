@@ -1,4 +1,4 @@
-// Package workerhdm 提供本地握手中继 PoC；尚不包含 Worker 或 WebSocket 客户端。
+// Package workerhdm 通过本地 TCP 桥或 WSS 中继握手，并在认证后切换直连 UDP。
 package workerhdm
 
 import (

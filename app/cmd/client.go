@@ -142,6 +142,7 @@ type clientConfigTransportUDP struct {
 type clientConfigTransport struct {
 	Type      string                   `mapstructure:"type"`
 	UDP       clientConfigTransportUDP `mapstructure:"udp"`
+	Worker    clientConfigWorker       `mapstructure:"worker"`
 	TCPBridge clientConfigTCPBridge    `mapstructure:"tcpBridge"`
 }
 
@@ -294,7 +295,7 @@ func (c *clientConfig) fillConnFactory(hyConfig *client.Config) error {
 	}
 	var openInner func() (net.PacketConn, error)
 	switch strings.ToLower(c.Transport.Type) {
-	case "tcpbridge":
+	case "tcpbridge", "worker":
 		openInner, err = c.workerHDMFactory(hyConfig, so.ListenUDP)
 		if err != nil {
 			return err
@@ -344,7 +345,7 @@ func (c *clientConfig) fillConnFactory(hyConfig *client.Config) error {
 				_ = conn.Close()
 				return nil, err
 			}
-			if strings.EqualFold(c.Transport.Type, "tcpBridge") {
+			if strings.EqualFold(c.Transport.Type, "tcpBridge") || strings.EqualFold(c.Transport.Type, "worker") {
 				// Gecko 也暴露 SyscallConn；中继模式统一选择 QUIC 的通用 PacketConn 路径。
 				return struct{ net.PacketConn }{wrapped}, nil
 			}
@@ -663,8 +664,8 @@ func (c *clientConfig) parseURI() bool {
 // Config validates the fields and returns a ready-to-use Hysteria client config
 func (c *clientConfig) Config() (*client.Config, error) {
 	if realmAddr, ok, err := c.parseRealmAddr(); ok || err != nil {
-		if strings.EqualFold(c.Transport.Type, "tcpBridge") {
-			return nil, configError{Field: "transport.type", Err: errors.New("tcpBridge does not support realm")}
+		if strings.EqualFold(c.Transport.Type, "tcpBridge") || strings.EqualFold(c.Transport.Type, "worker") {
+			return nil, configError{Field: "transport.type", Err: errors.New("handshake relay does not support realm")}
 		}
 		if c.Transport.UDP.HandshakeMigration.Enabled {
 			return nil, configError{Field: "transport.udp.handshakeMigration", Err: errors.New("realm is not supported")}
