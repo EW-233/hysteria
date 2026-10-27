@@ -147,3 +147,20 @@ func TestBridgeRejectsPublicEndpoints(t *testing.T) {
 	_, e = New(l, Config{Target: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}})
 	require.Error(t, e)
 }
+
+// TestBridgeHalfClose 将 TCP 半关闭视为中继结束，释放其独占 UDP socket。
+func TestBridgeHalfClose(t *testing.T) {
+	s, addr := startTestBridge(t, Config{})
+	c, e := net.Dial("tcp", addr)
+	require.NoError(t, e)
+	defer c.Close()
+	require.NoError(t, c.(*net.TCPConn).CloseWrite())
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(time.Second)))
+	var b [1]byte
+	_, e = c.Read(b[:])
+	require.Error(t, e)
+	if ne, ok := e.(net.Error); ok {
+		require.False(t, ne.Timeout())
+	}
+	require.Eventually(t, func() bool { return s.Stats().Active == 0 }, time.Second, time.Millisecond)
+}

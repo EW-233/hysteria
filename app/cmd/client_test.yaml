@@ -17,6 +17,10 @@ realm:
 
 transport:
   type: udp
+  tcpBridge:
+    address: 127.0.0.1:18080
+    connectTimeout: 5s
+    handshakeTimeout: 10s
   udp:
     handshakeMigration:
       enabled: true

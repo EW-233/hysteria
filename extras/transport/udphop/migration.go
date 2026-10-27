@@ -16,6 +16,28 @@ type PostAuthPacketConn interface {
 	SwitchAfterAuth() error
 }
 
+// packetOnly 隐藏底层 UDP 专用方法，避免 QUIC 对初始 TCP 中继执行 UDP syscall。
+type packetOnly struct {
+	net.PacketConn
+	switcher *udpHopPacketConn
+}
+
+func (p *packetOnly) SwitchAfterAuth() error { return p.switcher.SwitchAfterAuth() }
+
+// NewPostAuthRelayPacketConn 复用原切换器，将已有的握手中继替换为直连 UDP。
+// 成功后接管 initial 的所有权；构造失败由调用方关闭 initial。
+func NewPostAuthRelayPacketConn(initial net.PacketConn, target *net.UDPAddr, listen ListenUDPFunc) (PostAuthPacketConn, error) {
+	if initial == nil || target == nil || target.IP.To16() == nil || target.Port < 1 || target.Port > 65535 {
+		return nil, errors.New("relay requires an initial connection and a fixed UDP target")
+	}
+	if listen == nil {
+		listen = func() (net.PacketConn, error) { return net.ListenUDP("udp", nil) }
+	}
+	addr := &net.UDPAddr{IP: append(net.IP(nil), target.IP...), Port: target.Port, Zone: target.Zone}
+	u := initPacketConn(addr, []net.Addr{addr, addr}, 0, HopIntervalConfig{}, listen, true, initial, true)
+	return &packetOnly{PacketConn: u, switcher: u}, nil
+}
+
 // NewPostAuthPacketConn 固定从握手端口开始，不启动定时跳跃。
 // 两个目标必须使用同一 IP 和 IPv6 zone；旧 socket 最多保留五秒接收迟到包。
 func NewPostAuthPacketConn(addr *net.UDPAddr, dataPort int, listen ListenUDPFunc) (PostAuthPacketConn, error) {
