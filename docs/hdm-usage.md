@@ -89,3 +89,17 @@ sudo bash rollback-server.sh
 5. 再接入 Throne 做正常使用和测速，保存软件版本、源码提交、配置参数、pcap 与结果。
 
 远程吞吐、长时间稳定性、双端实际 443→8443 抓包、服务端重启与 Throne 原生替换尚待真实环境执行。分享 URI 不包含新增 HDM 参数。只有这些验收完成且获得授权后才创建 PR。
+
+## Windows 原生 TUN 手动测试
+
+现有 Windows 二进制包含 TUN 和 Wintun 支持。可从已配置的独立客户端目录生成 TUN 包：
+
+```powershell
+python scripts/hdm/package-tun.py build/hdm/hdm-client-windows-0.2.1 build/hdm/hdm-client-windows-tun-0.2.1
+```
+
+输出目录必须不存在。脚本复制二进制、CA 证书和构建信息，生成迁移及对照配置、管理员启动脚本、校验清单和 ZIP。源配置必须使用明确的 IPv4 服务器地址；真实密码只进入本地输出文件，不能提交到仓库。
+
+退出其他 VPN、旧 HDM 客户端，关闭残留系统代理和浏览器代理插件，然后右键 `start-tun-hdm.cmd` 以管理员身份运行。浏览器流量经 TUN 进入实验连接，可直接使用网页版 Speedtest。确认网页出口为服务器出口后开始测速；停止客户端，再使用 `start-tun-baseline.cmd` 对照，保持同一个测速节点。
+
+路由接管公网 IPv4 和全球单播 IPv6，排除服务器 IP 和本地网络以避免路由环路。保留系统 DNS 配置；局域网 DNS 查询仍走局域网，因此不提供 DNS 防泄漏保证。Ctrl+C 正常退出时关闭 TUN 并清理其路由。打包不会启动客户端；管理员权限、驱动加载和网页测速仍需实际验收。
