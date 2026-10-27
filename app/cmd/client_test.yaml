@@ -18,6 +18,11 @@ realm:
 transport:
   type: udp
   udp:
+    handshakeMigration:
+      enabled: true
+      dataPort: 8443
+      trigger: auth_success
+      fallback: true
     hopInterval: 30s
     minHopInterval: 10s
     maxHopInterval: 50s
