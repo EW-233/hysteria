@@ -1,5 +1,7 @@
 # Hysteria2 Handshake-to-Data Migration：第一阶段源码审计
 
+> 后续最小实现已完成；使用与部署见 [hdm-usage.md](hdm-usage.md)，实际测试记录见 [hdm-validation.md](hdm-validation.md)。以下保留第一阶段审计时的结论。
+
 ## 1. 结论与任务定位
 
 本阶段交付源码审计、修改定位和验证设计；尚未实现 HDM，也未验证 UDP 443 → 8443 的实际迁移。

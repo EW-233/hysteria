@@ -1,0 +1,10 @@
+{
+  "name": "HDM 实验节点",
+  "type": "extracore",
+  "socks_address": "127.0.0.1",
+  "socks_port": 18480,
+  "extra_core_path": "C:/path/to/hysteria-hdm-windows-amd64.exe",
+  "extra_core_args": "client -c %s",
+  "extra_core_conf": "# 握手端口和数据端口必须进入同一个 HY2 QUIC 监听实例。\nserver: SERVER_IP:443\nauth: REPLACE_WITH_SERVER_PASSWORD\ntls:\n  sni: hdm.test\n  ca: C:/path/to/server.crt\ntransport:\n  type: udp\n  udp:\n    handshakeMigration:\n      enabled: true\n      dataPort: 8443\n      trigger: auth_success\n      fallback: false\nsocks5:\n  listen: 127.0.0.1:18480\n",
+  "no_logs": false
+}

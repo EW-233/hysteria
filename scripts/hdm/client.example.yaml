@@ -1,0 +1,16 @@
+# 握手端口和数据端口必须进入同一个 HY2 QUIC 监听实例。
+server: SERVER_IP:443
+auth: REPLACE_WITH_SERVER_PASSWORD
+tls:
+  sni: hdm.test
+  ca: server.crt
+transport:
+  type: udp
+  udp:
+    handshakeMigration:
+      enabled: true
+      dataPort: 8443
+      trigger: auth_success
+      fallback: false
+socks5:
+  listen: 127.0.0.1:18480
