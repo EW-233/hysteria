@@ -37,7 +37,8 @@ func TestClientConfig(t *testing.T) {
 			},
 		},
 		Transport: clientConfigTransport{
-			Type: "udp",
+			Type:      "udp",
+			TCPBridge: clientConfigTCPBridge{Address: "127.0.0.1:18080", ConnectTimeout: 5 * time.Second, HandshakeTimeout: 10 * time.Second},
 			UDP: clientConfigTransportUDP{
 				HandshakeMigration: clientConfigHandshakeMigration{Enabled: true, DataPort: 8443, Trigger: "auth_success", Fallback: true},
 				HopInterval:        30 * time.Second,
