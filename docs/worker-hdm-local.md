@@ -110,6 +110,27 @@ pcap。本次证据来自真实 socket 的包头观察、认证/TLS 回调计数
 HTTP 初版测试的服务端在读完请求体前写响应，受到 HTTP/1 默认非全双工行为影响；
 已修正测试端为先读完整请求体再回显，生产转发代码未为此修改。
 
+### 已构建程序验收
+
+`bfe377c` 构建出版本 `0.4.2-worker-local` 的 Windows/Linux amd64 CLI 和 Bridge，
+两平台启动检查均通过。随后执行：
+
+```powershell
+python -X utf8 -B scripts/hdm/smoke-worker.py
+```
+
+脚本启动独立的真实 server、Bridge、client 进程以及本地 HTTP/HTTPS 回显服务，
+使用临时端口，结束后回收全部测试进程。实测结果：
+
+| 阶段 | HTTP 上传并回显 | HTTPS 上传并回显 |
+| --- | --- | --- |
+| 认证后 | 122,880 字节一致 | 122,880 字节一致 |
+| Bridge 进程退出后 | 151,552 字节一致 | 151,552 字节一致 |
+
+客户端日志仅出现一次认证后切换。报告与日志在 `build/worker-hdm/smoke/`，
+SHA256 校验和与构建来源在 `build/worker-hdm/`。这是一项功能验收，不是吞吐基准。
+WSL 的 Linux 定向 race 测试及追加的 HTTP/HTTPS、半关闭测试亦通过。
+
 ## 后续尚未验证
 
 - Cloudflare 免费账户上的 Worker WSS、VPC/Tunnel、独立 token 和各项实际限额。
