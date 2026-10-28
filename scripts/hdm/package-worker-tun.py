@@ -46,8 +46,8 @@ for source,target in ((base/"hysteria-worker-windows-amd64.exe","hysteria.exe"),
 UDP被阻断时没有Worker自动回退；看到切换日志不代表业务已收到回包，以网页实际访问为准。
 
 程序内置Wintun支持，无需单独下载DLL。开启TUN需要UAC授权。
-当前直连测试：关闭原Throne后，两个已核实Worker IP的WSS连接均被立即重置，尚不能进行独立测速。
-这属于入口连接问题，不是TUN权限问题；需要可直连的WSS入口才能继续。
+本次使用已验证的自有域名入口；加密DNS不可达时回退到包内已核实IP属于正常提示。
+本机直连已通过WSS认证、UDP迁移及临时代理TCP/UDP测试；实际TUN路由和浏览器测速仍需手测。
 
 本包包含个人Worker令牌及HY2密码，请勿公开分享；不含Cloudflare管理API密钥或SSH私钥。
 """,encoding="utf-8-sig")

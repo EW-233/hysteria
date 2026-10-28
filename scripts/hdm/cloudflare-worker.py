@@ -54,7 +54,14 @@ elif args.action == "deploy":
         api("PUT", "/workers/scripts/hdm-handshake", files={"metadata": (None, json.dumps(metadata), "application/json"), "index.mjs": ("index.mjs", source, "application/javascript+module")})
     api("POST", "/workers/scripts/hdm-handshake/subdomain", json={"enabled": True, "previews_enabled": False})
     subdomain = api("GET", "/workers/subdomain")["subdomain"]
-    state["workerURL"] = f"https://hdm-handshake.{subdomain}.workers.dev"
+    # 保留已绑定的自有域名，避免重新部署后客户端退回不可达入口。
+    if state.get("customDomain"):
+        domains = api("GET", "/workers/domains")
+        if not any(d.get("hostname") == state["customDomain"] and d.get("service") == "hdm-handshake" for d in domains):
+            raise RuntimeError("自有域名绑定不存在，请先检查域名配置")
+        state["workerURL"] = "https://" + state["customDomain"]
+    else:
+        state["workerURL"] = f"https://hdm-handshake.{subdomain}.workers.dev"
     save()
     print("Worker deployed:", state["workerURL"])
 else:

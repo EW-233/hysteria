@@ -50,6 +50,8 @@ def udp_check(port):
 
 config = yaml.safe_load(a.config.read_text(encoding="utf-8"))
 assert config["transport"]["type"].lower() == "worker"
+# 验收仅启动临时代理，不继承输入配置的TUN网卡和路由。
+config.pop("tun", None)
 http_port,socks_port = free_port(),free_port()
 while http_port == socks_port: socks_port=free_port()
 config["http"]={"listen":f"127.0.0.1:{http_port}"}
