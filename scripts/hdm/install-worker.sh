@@ -19,5 +19,10 @@ if ! systemctl restart hysteria-hdm.service; then
   systemctl restart hysteria-hdm.service
   exit 1
 fi
-systemctl enable --now hdm-bridge.service hdm-cloudflared.service
-systemctl is-active hysteria-hdm hdm-bridge hdm-cloudflared
+# 已运行的服务也必须重新加载新二进制和启动参数。
+systemctl enable hdm-bridge.service hdm-cloudflared.service
+systemctl restart hdm-bridge.service hdm-cloudflared.service
+# is-active接受多个单元时任意一个active即可成功，因此必须逐个验收。
+for unit in hysteria-hdm hdm-bridge hdm-cloudflared; do
+  systemctl is-active --quiet "$unit"
+done

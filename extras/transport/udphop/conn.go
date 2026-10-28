@@ -50,11 +50,12 @@ type udpHopPacketConn struct {
 	bufPool sync.Pool
 	debug   bool
 
-	manual           bool
-	switchOnce       sync.Once
-	switchErr        error
-	previousTimer    *time.Timer
-	reportReadErrors bool
+	manual              bool
+	switchOnce          sync.Once
+	switchErr           error
+	previousTimer       *time.Timer
+	relayConn           net.PacketConn
+	readDeadlineChanged chan struct{}
 }
 
 type udpPacket struct {
@@ -99,23 +100,26 @@ func newPacketConn(addr net.Addr, addrs []net.Addr, index int, interval HopInter
 func initPacketConn(addr net.Addr, addrs []net.Addr, index int, interval HopIntervalConfig, listenUDPFunc ListenUDPFunc, manual bool, curConn net.PacketConn, reportReadErrors bool) *udpHopPacketConn {
 	debug, _ := strconv.ParseBool(os.Getenv(debugEnv))
 	hConn := &udpHopPacketConn{
-		Addr:             addr,
-		Addrs:            addrs,
-		HopInterval:      interval,
-		ListenUDPFunc:    listenUDPFunc,
-		prevConn:         nil,
-		currentConn:      curConn,
-		addrIndex:        index,
-		manual:           manual,
-		reportReadErrors: reportReadErrors,
-		recvQueue:        make(chan *udpPacket, packetQueueSize),
-		closeChan:        make(chan struct{}),
+		Addr:                addr,
+		Addrs:               addrs,
+		HopInterval:         interval,
+		ListenUDPFunc:       listenUDPFunc,
+		prevConn:            nil,
+		currentConn:         curConn,
+		addrIndex:           index,
+		manual:              manual,
+		readDeadlineChanged: make(chan struct{}),
+		recvQueue:           make(chan *udpPacket, packetQueueSize),
+		closeChan:           make(chan struct{}),
 		bufPool: sync.Pool{
 			New: func() interface{} {
 				return make([]byte, udpBufferSize)
 			},
 		},
 		debug: debug,
+	}
+	if reportReadErrors {
+		hConn.relayConn = curConn
 	}
 	if hConn.debug {
 		hConn.debugPrint("Initialized: local=%s target=%s interval=%s", curConn.LocalAddr(), addr, interval)
@@ -149,8 +153,8 @@ func (u *udpHopPacketConn) recvLoop(conn net.PacketConn) {
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
 			u.bufPool.Put(buf)
-			if u.reportReadErrors {
-				// 帧错误不可恢复；旧路径的 EOF/超时在出队时按来源过滤。
+			if conn == u.relayConn {
+				// 仅初始中继的帧错误不可恢复；迁移后的UDP必须保留独立错误策略。
 				// 包装后不直接实现 net.Error，防止 QUIC 将半帧超时当作 Temporary 重试。
 				select {
 				case u.recvQueue <- &udpPacket{Err: fmt.Errorf("relay path read failed: %w", err), Source: conn}:
@@ -160,14 +164,30 @@ func (u *udpHopPacketConn) recvLoop(conn net.PacketConn) {
 			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				// Pass through timeout errors, but not permanent errors such as connection closed.
-				// Connection close is normal as we close the old connection to exit this loop every time we hop.
-				select {
-				case u.recvQueue <- &udpPacket{Err: netErr}:
-				case <-u.closeChan:
-					return
+				// 逻辑读期限由ReadFrom独立处理，不排队可能在期限重设后过期的超时。
+				// 已到期时等待期限更新，避免底层socket立即超时形成忙循环。
+				u.connMutex.RLock()
+				deadline, changed := u.readDeadline, u.readDeadlineChanged
+				u.connMutex.RUnlock()
+				if !deadline.IsZero() && !time.Now().Before(deadline) {
+					select {
+					case <-changed:
+					case <-u.closeChan:
+						return
+					}
 				}
 				continue
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			// 超长UDP数据报只丢弃当前报文；Windows的WSAEMSGSIZE不代表socket损坏。
+			if isTruncatedPacketError(err) || (errors.As(err, &netErr) && netErr.Temporary()) {
+				continue
+			}
+			select {
+			case u.recvQueue <- &udpPacket{Err: fmt.Errorf("UDP path read failed: %w", err), Source: conn}:
+			case <-u.closeChan:
 			}
 			return
 		}
@@ -263,30 +283,68 @@ func (u *udpHopPacketConn) switchLocked(index int) error {
 	return nil
 }
 
+// ReadFrom独立处理期限，接收协程退出后仍可被QUIC关闭流程可靠唤醒。
 func (u *udpHopPacketConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 	for {
-		select {
-		case p := <-u.recvQueue:
-			if p.Err != nil {
-				if p.Source != nil {
-					u.connMutex.RLock()
-					current := p.Source == u.currentConn
-					u.connMutex.RUnlock()
-					if !current {
-						continue
-					}
-				}
-				return 0, nil, p.Err
-			}
-			// Currently we do not check whether the packet is from
-			// the server or not due to performance reasons.
-			n := copy(b, p.Buf[:p.N])
-			u.bufPool.Put(p.Buf)
-			return n, u.Addr, nil
-		case <-u.closeChan:
+		u.connMutex.RLock()
+		deadline, changed, closed := u.readDeadline, u.readDeadlineChanged, u.closed
+		u.connMutex.RUnlock()
+		if closed {
 			return 0, nil, net.ErrClosed
 		}
+		var timer *time.Timer
+		var timeout <-chan time.Time
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return 0, nil, os.ErrDeadlineExceeded
+			}
+			timer = time.NewTimer(remaining)
+			timeout = timer.C
+		}
+		var packet *udpPacket
+		select {
+		case packet = <-u.recvQueue:
+		case <-changed:
+			if timer != nil {
+				timer.Stop()
+			}
+			continue
+		case <-timeout:
+			// 与期限延长并发时重新读取状态，不能返回已经被撤销的超时。
+			continue
+		case <-u.closeChan:
+			if timer != nil {
+				timer.Stop()
+			}
+			return 0, nil, net.ErrClosed
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		if packet.Err != nil {
+			if packet.Source != nil {
+				u.connMutex.RLock()
+				current := packet.Source == u.currentConn
+				u.connMutex.RUnlock()
+				if !current {
+					continue
+				}
+			}
+			return 0, nil, packet.Err
+		}
+		n = copy(b, packet.Buf[:packet.N])
+		u.bufPool.Put(packet.Buf)
+		return n, u.Addr, nil
 	}
+}
+
+// notifyReadDeadlineLocked广播期限变化，不依赖底层接收协程仍然存活。
+func (u *udpHopPacketConn) notifyReadDeadlineLocked() {
+	if u.readDeadlineChanged != nil {
+		close(u.readDeadlineChanged)
+	}
+	u.readDeadlineChanged = make(chan struct{})
 }
 
 func (u *udpHopPacketConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
@@ -333,6 +391,7 @@ func (u *udpHopPacketConn) SetDeadline(t time.Time) error {
 	defer u.connMutex.Unlock()
 	u.deadline = t
 	u.readDeadline = t
+	u.notifyReadDeadlineLocked()
 	u.writeDeadline = t
 	if u.prevConn != nil {
 		_ = u.prevConn.SetDeadline(t)
@@ -345,6 +404,7 @@ func (u *udpHopPacketConn) SetReadDeadline(t time.Time) error {
 	defer u.connMutex.Unlock()
 	u.deadline = time.Time{}
 	u.readDeadline = t
+	u.notifyReadDeadlineLocked()
 	if u.prevConn != nil {
 		_ = u.prevConn.SetReadDeadline(t)
 	}

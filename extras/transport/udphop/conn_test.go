@@ -95,14 +95,11 @@ func TestRecvLoopTimeoutIsNotFatal(t *testing.T) {
 
 	go u.recvLoop(conn)
 
-	first := <-u.recvQueue
-	require.Error(t, first.Err)
-	require.True(t, errors.As(first.Err, new(net.Error)))
-
-	second := <-u.recvQueue
-	require.NoError(t, second.Err)
-	require.Equal(t, 3, second.N)
-	u.bufPool.Put(second.Buf)
+	// 逻辑期限由ReadFrom返回，底层超时不会污染重设期限后的数据队列。
+	packet := <-u.recvQueue
+	require.NoError(t, packet.Err)
+	require.Equal(t, 3, packet.N)
+	u.bufPool.Put(packet.Buf)
 }
 
 func TestHopReappliesStoredDeadlines(t *testing.T) {
