@@ -22,7 +22,7 @@ try {
     # 系统DNS可能返回错误地址；先查询HTTPS DNS，再使用打包时核实的短期缓存。
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $addresses = @()
-    foreach ($resolver in @('https://1.1.1.1/dns-query', 'https://dns.alidns.com/resolve')) {
+    foreach ($resolver in @('https://1.1.1.1/dns-query', 'https://1.0.0.1/dns-query')) {
         $reply = $null; $reader = $null
         try {
             $query = $resolver + '?name=' + [Uri]::EscapeDataString($worker.DnsSafeHost) + '&type=A'
