@@ -17,6 +17,11 @@ realm:
 
 transport:
   type: udp
+  worker:
+    url: wss://worker.example.com/hdm/connect
+    token: test-worker-token-0123456789abcdef
+    connectTimeout: 8s
+    handshakeTimeout: 10s
   tcpBridge:
     address: 127.0.0.1:18080
     connectTimeout: 5s

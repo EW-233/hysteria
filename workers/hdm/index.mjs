@@ -80,12 +80,14 @@ export default {
     let socket, expired = false, timer;
     try {
       // connect 超时后到达的 socket 仍须关闭，不能成为悬挂的后台连接。
-      const opening = Promise.resolve(env.HDM_VPC.connect(BACKEND)).then(s => { if (expired) { void s.close(); throw new Error("expired"); } return s; });
+      const opening = Promise.resolve(env.HDM_VPC.connect(BACKEND)).then(s => { if (expired) { void Promise.resolve(s.close()).catch(() => {}); throw new Error("expired"); } return s; });
       socket = await Promise.race([opening, new Promise((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error("timeout")); }, 5000); })]);
     } catch { return new Response("backend unavailable", { status: 502 }); }
     finally { clearTimeout(timer); }
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
+    // 2026-03 起默认使用 Blob；在接收前固定为同步可检查的 ArrayBuffer。
+    server.binaryType = "arraybuffer";
     server.accept();
     relay(server, socket);
     return new Response(null, { status: 101, webSocket: client });

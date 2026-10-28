@@ -65,3 +65,51 @@ func TestWSPacketConn(t *testing.T) {
 		})
 	}
 }
+
+// 硬超时不能被上层清空或延长；鉴权失败不得创建直连 UDP socket。
+func TestWSDeadlineAndUnauthorized(t *testing.T) {
+	up := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/deny" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		_, _, _ = ws.ReadMessage()
+	}))
+	defer server.Close()
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[4:], nil)
+	require.NoError(t, err)
+	p := &wsPacketConn{ws: ws, target: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 443}, expires: time.Now().Add(30 * time.Millisecond)}
+	defer p.Close()
+	require.NoError(t, p.SetDeadline(time.Now().Add(time.Hour)))
+	start := time.Now()
+	_, _, err = p.ReadFrom(make([]byte, 2048))
+	require.Error(t, err)
+	require.Less(t, time.Since(start), time.Second)
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
+	defer deny.Close()
+	_, err = DialWebSocket(WSConfig{URL: "ws" + deny.URL[4:] + "/hdm/connect", Token: strings.Repeat("x", 32)}, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 443}, func() (net.PacketConn, error) {
+		t.Error("unauthorized request created a UDP socket")
+		return nil, net.ErrClosed
+	})
+	require.Error(t, err)
+}
+
+// 模拟WebSocket内部清空写deadline后，慢读端仍必须触发调用方的硬期限。
+func TestWSWriteDeadlineCannotBeCleared(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	conn := &boundedWSConn{Conn: left}
+	conn.writeLimit.Store(time.Now().Add(30 * time.Millisecond).UnixNano())
+	require.NoError(t, conn.SetWriteDeadline(time.Time{}))
+	start := time.Now()
+	_, err := conn.Write([]byte("blocked"))
+	require.Error(t, err)
+	require.Less(t, time.Since(start), time.Second)
+}
