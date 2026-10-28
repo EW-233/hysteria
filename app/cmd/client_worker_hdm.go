@@ -20,6 +20,7 @@ type clientConfigTCPBridge struct {
 
 // clientConfigWorker 独立配置公网 WSS 入口，接入令牌与 HY2 密码分别验证。
 type clientConfigWorker struct {
+	DialIP           string        `mapstructure:"dialIP"`
 	URL              string        `mapstructure:"url"`
 	Token            string        `mapstructure:"token"`
 	ConnectTimeout   time.Duration `mapstructure:"connectTimeout"`
@@ -49,7 +50,7 @@ func (c *clientConfig) workerHDMFactory(hy *client.Config, listen udphop.ListenU
 	var dial func() (udphop.PostAuthPacketConn, error)
 	if isWorker {
 		w := c.Transport.Worker
-		cfg := workerhdm.WSConfig{URL: w.URL, Token: w.Token, ConnectTimeout: w.ConnectTimeout, HandshakeTimeout: w.HandshakeTimeout}
+		cfg := workerhdm.WSConfig{URL: w.URL, Token: w.Token, DialIP: w.DialIP, ConnectTimeout: w.ConnectTimeout, HandshakeTimeout: w.HandshakeTimeout}
 		if err := cfg.Validate(); err != nil {
 			return nil, configError{Field: field, Err: err}
 		}

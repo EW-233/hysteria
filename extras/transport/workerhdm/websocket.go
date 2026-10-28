@@ -18,7 +18,7 @@ import (
 
 // WSConfig 只允许验证证书的公网 WSS；明文 WS 限制为字面量回环测试。
 type WSConfig struct {
-	URL, Token                       string
+	URL, Token, DialIP               string
 	ConnectTimeout, HandshakeTimeout time.Duration
 }
 
@@ -29,6 +29,15 @@ func (c WSConfig) Validate() error {
 	}
 	if u.Scheme != "wss" && !(u.Scheme == "ws" && net.ParseIP(u.Hostname()).IsLoopback()) {
 		return errors.New("worker.url requires wss (ws is only allowed on a literal loopback IP)")
+	}
+	if c.DialIP != "" {
+		ip := net.ParseIP(c.DialIP)
+		if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
+			return errors.New("worker.dialIP requires a unicast literal IP")
+		}
+		if u.Scheme == "ws" && !ip.IsLoopback() {
+			return errors.New("plain WS dialIP must be loopback")
+		}
 	}
 	if len(c.Token) < 32 || len(c.Token) > 256 || strings.ContainsAny(c.Token, "\r\n \t") {
 		return errors.New("worker.token must contain 32..256 non-whitespace characters")
@@ -55,6 +64,14 @@ func DialWebSocket(c WSConfig, target *net.UDPAddr, listen udphop.ListenUDPFunc)
 	var raw *boundedWSConn
 	d := websocket.Dialer{HandshakeTimeout: c.ConnectTimeout, ReadBufferSize: 4096, WriteBufferSize: 4096,
 		NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			// 只替换TCP拨号地址，WebSocket Host和TLS验证继续使用URL原域名。
+			if c.DialIP != "" {
+				_, port, err := net.SplitHostPort(address)
+				if err != nil {
+					return nil, err
+				}
+				address = net.JoinHostPort(c.DialIP, port)
+			}
 			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 			if err != nil {
 				return nil, err

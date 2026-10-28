@@ -1,6 +1,7 @@
 package workerhdm
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -112,4 +113,41 @@ func TestWSWriteDeadlineCannotBeCleared(t *testing.T) {
 	_, err := conn.Write([]byte("blocked"))
 	require.Error(t, err)
 	require.Less(t, time.Since(start), time.Second)
+}
+
+// 固定拨号IP后仍发送原Host，并保留正常TLS证书验证。
+func TestWSDialIP(t *testing.T) {
+	token := strings.Repeat("x", 32)
+	for _, ip := range []string{"bad-host", "0.0.0.0", "224.0.0.1"} {
+		require.Error(t, (WSConfig{URL: "wss://example.com/hdm/connect", Token: token, DialIP: ip}).Validate())
+	}
+	require.Error(t, (WSConfig{URL: "ws://127.0.0.1/hdm/connect", Token: token, DialIP: "192.0.2.1"}).Validate())
+	up := websocket.Upgrader{}
+	hosts := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hosts <- r.Host
+		ws, e := up.Upgrade(w, r, nil)
+		if e != nil {
+			return
+		}
+		defer ws.Close()
+		_, _, _ = ws.ReadMessage()
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	conn, err := DialWebSocket(WSConfig{URL: "ws://127.0.0.2:" + port + "/hdm/connect", Token: token, DialIP: "127.0.0.1"}, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 443}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.2:"+port, <-hosts)
+	require.NoError(t, conn.Close())
+	sni := make(chan string, 1)
+	secure := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("untrusted TLS certificate was accepted") }))
+	secure.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) { sni <- hello.ServerName; return nil, nil }}
+	secure.StartTLS()
+	defer secure.Close()
+	_, port, err = net.SplitHostPort(secure.Listener.Addr().String())
+	require.NoError(t, err)
+	_, err = DialWebSocket(WSConfig{URL: "wss://worker.example.invalid:" + port + "/hdm/connect", Token: token, DialIP: "127.0.0.1"}, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 443}, nil)
+	require.Error(t, err)
+	require.Equal(t, "worker.example.invalid", <-sni)
 }

@@ -75,3 +75,14 @@ WSS/Tunnel/Bridge 在认证前断开，当前连接失败；认证后业务依�
 部署使用 `cloudflare-worker.py`、两个systemd单元及 `install-worker.sh`。安装前上传SHA256SUMS与二进制；回滚脚本 `rollback-worker.sh` 停用新增实验服务并恢复 `/opt/hysteria-hdm/hysteria.before-worker-wss`，保留Cloudflare资源与凭据。执行停服/回滚须符合当前会话授权及审批要求。
 
 运行配置包含独立Worker接入令牌。Cloudflare管理令牌保存在Git外受限目录；其到期不等于已部署Worker自动下线。CLI认证前入口失效会连接失败，认证后UDP故障仍由QUIC超时结束，无自动fallback。
+
+
+## 0.5.2 Windows CMD / TUN 包（2026-10-28）
+
+使用 `package-worker-tun.py` 生成个人TUN包。用户完整解压后双击 `start-tun.cmd`，脚本通过Windows UAC启动管理员CMD；未授权则停止。启动前检查已有TUN/VPN，避免叠加测试。此包使用内核原生TUN及内置Wintun，取消HTTP/SOCKS监听。
+
+新增可选 `transport.worker.dialIP`，仅改变TCP拨号目标IP，保留WSS URL域名、Host及TLS证书验证。CMD每次启动先解析Worker IPv4，再把该IP和服务器UDP IP加入TUN排除路由，然后写入运行时JSON。一个进程的重连继续使用固定IP，防止DNS变化导致WSS回流到TUN；下次运行CMD重新解析。管理中继和局域网同样保留直连。
+
+`prepare-tun.ps1 -PrepareOnly`仅生成配置，不创建网卡、不改路由、不申请管理员权限，可用于打包验证。实际TUN启动由用户运行CMD完成。窗口内按Ctrl+C触发客户端已有的正常退出和TUN路由清理；异常强杀不保证同等清理。
+
+验收包括固定IP仍保留Host/SNI、拒绝不可信TLS证书、配置字段解析、迁移相关race测试、CMD辅助脚本语法及生成配置路由检查。公网测试仅验证新增固定IP拨号与原服务端兼容；不会把不开TUN的测试视为Windows路由接管已验收。

@@ -19,6 +19,7 @@ transport:
   type: udp
   worker:
     url: wss://worker.example.com/hdm/connect
+    dialIP: 192.0.2.1
     token: test-worker-token-0123456789abcdef
     connectTimeout: 8s
     handshakeTimeout: 10s
