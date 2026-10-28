@@ -19,8 +19,34 @@ try {
     }
     $worker = [Uri]$config.transport.worker.url
     if ($worker.Scheme -ne 'wss') { throw '此包要求Worker使用WSS。' }
-    $addresses = @(Resolve-DnsName -Name $worker.DnsSafeHost -Type A -DnsOnly -QuickTimeout -ErrorAction Stop | Where-Object { $_.Type -eq 'A' } | ForEach-Object IPAddress | Select-Object -Unique)
-    if ($addresses.Count -eq 0) { throw 'Worker域名没有可用IPv4地址，请检查当前网络DNS。' }
+    # 系统DNS可能返回错误地址；先查询HTTPS DNS，再使用打包时核实的短期缓存。
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $addresses = @()
+    foreach ($resolver in @('https://1.1.1.1/dns-query', 'https://dns.alidns.com/resolve')) {
+        $reply = $null; $reader = $null
+        try {
+            $query = $resolver + '?name=' + [Uri]::EscapeDataString($worker.DnsSafeHost) + '&type=A'
+            $request = [Net.HttpWebRequest]::Create($query)
+            $request.Accept = 'application/dns-json'
+            $request.Proxy = $null
+            $request.Timeout = 4000; $request.ReadWriteTimeout = 4000
+            $reply = $request.GetResponse()
+            $reader = [IO.StreamReader]::new($reply.GetResponseStream())
+            $answer = $reader.ReadToEnd() | ConvertFrom-Json
+            if ($answer.Status -eq 0) {
+                $addresses = @($answer.Answer | Where-Object { $_.type -eq 1 } | ForEach-Object { ([Net.IPAddress]::Parse($_.data)).ToString() } | Select-Object -Unique)
+            }
+            if ($addresses.Count -gt 0) { break }
+        } catch { Write-Host "加密DNS暂不可用：$resolver" }
+        finally { if ($reader) { $reader.Dispose() }; if ($reply) { $reply.Dispose() } }
+    }
+    if ($addresses.Count -eq 0) {
+        $bootstrap = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'worker-bootstrap.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($bootstrap.host -ne $worker.DnsSafeHost -or [DateTimeOffset]::UtcNow -gt [DateTimeOffset]::Parse($bootstrap.validUntil)) { throw '入口缓存不匹配或已过期，请更新入口配置。' }
+        $addresses = @($bootstrap.ipv4 | ForEach-Object { ([Net.IPAddress]::Parse($_)).ToString() })
+        Write-Host '加密DNS未返回可用结果，使用打包时通过服务器核实的入口IP；TLS证书仍正常验证。'
+    }
+    if ($addresses.Count -eq 0) { throw '没有可用Worker入口IP。' }
     $workerIP = [Net.IPAddress]::Parse($addresses[0]).ToString()
     $serverHost = ($config.server -split ':')[0]
     $serverIP = [Net.IPAddress]::Parse($serverHost)

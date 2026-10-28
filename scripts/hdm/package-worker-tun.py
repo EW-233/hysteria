@@ -21,6 +21,7 @@ assert config["transport"]["type"].lower()=="worker"
 ca=Path(config["tls"]["ca"])
 if not ca.is_absolute(): ca=a.config.resolve().parent/ca
 shutil.copy2(ca,out/"server.crt")
+shutil.copy2(base/"live/worker-bootstrap.json",out/"worker-bootstrap.json")
 config["tls"]["ca"]="server.crt"
 for key in ("socks5","http","tun"): config.pop(key,None)
 config["transport"]["worker"].pop("dialIP",None)
@@ -40,11 +41,14 @@ for source,target in ((base/"hysteria-worker-windows-amd64.exe","hysteria.exe"),
 本包接管公网IPv4和全球单播IPv6的TCP/UDP，未启用HTTP/SOCKS监听，不修改系统代理。
 启动时解析并固定本次Worker IPv4，排除Worker、HY2服务器和管理中继，避免TUN环路；TLS仍校验Worker原域名。
 保留局域网访问和系统当前DNS设置，不承诺DNS防泄漏。
-每次重新运行CMD都会重新解析Worker地址。Worker入口本身必须在关闭原代理后可达。
+每次重新运行CMD优先查询加密DNS；不可用时使用7天有效期的服务器核实缓存，过期则停止。Worker入口本身必须在关闭原代理后可达。
 客户端先经WSS/Worker/Tunnel认证，收到HTTP233后同一QUIC会话切换到UDP8443。
 UDP被阻断时没有Worker自动回退；看到切换日志不代表业务已收到回包，以网页实际访问为准。
 
 程序内置Wintun支持，无需单独下载DLL。开启TUN需要UAC授权。
+当前直连测试：关闭原Throne后，两个已核实Worker IP的WSS连接均被立即重置，尚不能进行独立测速。
+这属于入口连接问题，不是TUN权限问题；需要可直连的WSS入口才能继续。
+
 本包包含个人Worker令牌及HY2密码，请勿公开分享；不含Cloudflare管理API密钥或SSH私钥。
 """,encoding="utf-8-sig")
 (out/"SHA256SUMS").write_text("".join(hashlib.sha256(f.read_bytes()).hexdigest()+"  "+f.name+"\n" for f in sorted(out.iterdir()) if f.is_file()),encoding="utf-8")
