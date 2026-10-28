@@ -1,5 +1,5 @@
 ﻿# 构建 WSS 握手中继实验的 CLI 和 Bridge，保留原 HDM 构建目录。
-param([string]$Version = '0.5.5-worker-tun', [string]$Toolchain = 'go1.26.3')
+param([string]$Version = '0.5.6-worker-tun', [string]$Toolchain = 'go1.26.3')
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $outputDir = Join-Path $projectRoot 'build/worker-hdm'
