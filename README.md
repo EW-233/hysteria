@@ -1,3 +1,13 @@
+# dual-hy2：Hysteria 握手迁移实验
+
+此仓库用于源码审核，包含认证后 UDP 路径迁移，以及通过 WSS / Cloudflare Worker / TCP-UDP Bridge 完成握手的实验实现。基于 Hysteria 上游开发，保留原 MIT 许可证、作者署名和上游历史。
+
+**审核入口：[源码审核说明](docs/review-guide.md)**。这是实验代码，公网部署记录保留了验证边界，不能据此视为完整安全审计或长期稳定性结论。
+
+公开历史中的个人邮箱已替换为 GitHub noreply；真实服务器地址、Worker 子域名和本机路径已替换为示例。构建目录、私人配置和实际密钥不在发布范围内。下方为上游 README。
+
+---
+
 # ![Hysteria 2](logo.svg)
 
 [![License][1]][2] [![Release][3]][4] [![Telegram][5]][6] [![Discussions][7]][8]

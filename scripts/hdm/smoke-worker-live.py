@@ -13,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 p = argparse.ArgumentParser()
 p.add_argument("--config", type=Path, required=True)
+p.add_argument("--expected-egress", required=True, help="预期出口 IPv4 地址")
 a = p.parse_args()
 out = ROOT / "build/worker-hdm/public-smoke"
 out.mkdir(exist_ok=True)
@@ -74,7 +75,7 @@ with (out/"client.log").open("wb") as log:
         session.proxies={"http":f"http://127.0.0.1:{http_port}","https":f"http://127.0.0.1:{http_port}"}
         def tcp_check():
             r=session.get("https://api.ipify.org",timeout=20);r.raise_for_status()
-            assert r.text.strip()=="192.0.2.20"
+            assert r.text.strip()==a.expected_egress
             return r.text.strip()
         result={"egressBefore":tcp_check(),"udpDNSBefore":udp_check(socks_port)}
         print("WSS authenticated; TCP and UDP passed",flush=True)

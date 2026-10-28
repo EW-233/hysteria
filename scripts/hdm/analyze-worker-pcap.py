@@ -8,7 +8,7 @@ from pathlib import Path
 
 p=argparse.ArgumentParser()
 p.add_argument("pcap",type=Path)
-p.add_argument("--server",default="192.0.2.20")
+p.add_argument("--server", required=True, help="待核对的服务端 IPv4 地址")
 p.add_argument("--data-port",type=int,default=8443)
 a=p.parse_args()
 raw=a.pcap.read_bytes()

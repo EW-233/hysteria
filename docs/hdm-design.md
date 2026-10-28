@@ -1,5 +1,7 @@
 # Hysteria2 Handshake-to-Data Migration：第一阶段源码审计
 
+> 公开副本中的服务器地址、域名及本机路径已脱敏；详情见 [源码审核说明](review-guide.md)。
+
 > 后续最小实现已完成；使用与部署见 [hdm-usage.md](hdm-usage.md)，实际测试记录见 [hdm-validation.md](hdm-validation.md)。以下保留第一阶段审计时的结论。
 
 ## 1. 结论与任务定位

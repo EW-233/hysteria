@@ -1,5 +1,7 @@
 # Cloudflare 握手中继实验
 
+> 公开副本中的服务器地址、域名及本机路径已脱敏；详情见 [源码审核说明](review-guide.md)。
+
 新增 `transport.type: worker`：客户端通过验证公网证书的 WSS 连接 Worker，二进制消息逐个承载 QUIC 数据报。Worker 通过固定 Tunnel 的 VPC Network 连接 VPS 回环 `127.0.0.1:18080`，复用长度帧 TCP/UDP Bridge。
 
 认证仍由最终 HY2 服务端完成；客户端收到 HTTP 233 后调用已有 `SwitchAfterAuth`，同一 QUIC/TLS 会话切换到配置 `server` 的直连 UDP。Worker 无法解密内部流量，也无法识别 233。切换日志只确认本地换路，业务收发测试才确认数据路径。

@@ -1,5 +1,7 @@
 # Throne 原生迁移开发索引（2026-10-27）
 
+> 公开副本中的服务器地址、域名及本机路径已脱敏；详情见 [源码审核说明](review-guide.md)。
+
 本轮按用户要求先改代码。以 GitHub 最新正式版 Throne 1.3.2 及其锁定的 sing-box、sing-quic 为基线，未部署新客户端、未改服务器、未创建 PR。
 
 实际代码位于相邻仓库，分支均为 `codex/hy2-post-auth-migration`：
