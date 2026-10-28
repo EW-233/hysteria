@@ -1,0 +1,19 @@
+[Unit]
+Description=HDM private handshake Cloudflare Tunnel
+After=network-online.target hdm-bridge.service
+Wants=network-online.target hdm-bridge.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=tunnel-token:/etc/hdm-worker/tunnel-token.txt
+ExecStart=/opt/hdm-worker/cloudflared tunnel --no-autoupdate --protocol http2 --edge-ip-version 4 --metrics 127.0.0.1:18081 run --token-file %d/tunnel-token
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

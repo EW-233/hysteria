@@ -45,3 +45,33 @@ Cloudflare Workers VPC 当前 Beta 免费，仍受 Workers Free 配额限制；�
 ## 断连行为
 
 WSS/Tunnel/Bridge 在认证前断开，当前连接失败；认证后业务依赖直连 UDP。直连 UDP 黑洞不会自动回到 Worker，由 QUIC 超时结束。新的连接需要重新完成 WSS 握手。已有 Throne 未移植这一模式，先用独立 CLI 验证。
+
+
+## 2026-10-27 公网部署与验收（UTC−7）
+
+服务器管理全部通过 `192.0.2.10` 的 SSH 会话内 nc 中继连接 `192.0.2.20:45222`，私钥保持在本机。
+
+- `hdm-cloudflared.service`：cloudflared 2026.10.5，官方资产 SHA256 校验通过；HTTP/2连接，4条健康Tunnel连接。
+- `hdm-bridge.service`：仅监听 `127.0.0.1:18080`，固定转发到实验HY2 `127.0.0.1:443`。
+- `hysteria-hdm.service`：更新独立实验实例，直连数据目标为 `192.0.2.20:8443`，沿用原8443→443重定向。
+- 原普通HY2 `sb-us.service`（26061/UDP）持续运行；未修改中继服务器上的mieru。
+- Worker `hdm-handshake.YOUR_SUBDOMAIN.workers.dev`：health=200，未鉴权连接=401，带目标参数请求=404。
+- VPC Network直接绑定Tunnel UUID已实测可访问回环Bridge；未配置公网Bridge入口或DNS记录。Tunnel API返回warp-routing.enabled=false，该直接绑定链路仍正常，不将这个字段伪报为已启用。
+
+公网验收通过WSS完成认证，等待16秒（超过中继15秒硬生命周期），服务器回环Bridge建立连接数为0，继续使用同一客户端完成IPv4出口检查、SOCKS5 UDP DNS和5,000,000字节下载。该次下载1.843秒，约21.7Mbps，仅为连通性粗测，不代表吞吐上限。
+
+抓包中回环接口含4个QUIC Initial包；公网8443入口收到1029个短头包，未见QUIC Initial。捕获期间还存在较早测试会话的5个保活包，新会话源端口40313贡献1024包。客户端日志只有1次认证连接和1次迁移。仅截取128字节包头；不通过CID字节直接宣称匹配，因为QUIC可轮换连接ID。
+
+验收时用户原Throne TUN仍开启，Windows路由显示先经过throne-tun；服务器看到国内来源IP。此结果证明该环境中的WSS认证后UDP业务可用，但**不能替代关闭原TUN后的独立直连验收**。个人交付包建议用户先关闭原TUN，再启动CLI和独立代理浏览器手测。
+
+曾尝试主动停用实验Tunnel/Bridge的命令被自动审批拒绝（只返回blocked by policy）。本轮没有执行该停服测试，改为上述硬生命周期到期+回环连接归零验收。客户端与浏览器代理手测不需要管理员权限。
+
+## 构建、交付与回滚
+
+`build-worker.ps1` 默认Go1.26.3；Go1.26.0在Windows race运行中曾发生运行时崩溃，1.26.3的相关race测试通过。四个相关包完整测试通过，Worker模拟测试覆盖2026运行时默认Blob行为，并在accept前显式指定ArrayBuffer。
+
+`package-worker.py`生成个人客户端包，含真实配置、CA、启动脚本和独立Edge代理测试脚本；输出只在忽略的build目录，不包含Cloudflare管理密钥或SSH私钥。HTTP代理11809，SOCKS5代理11808。默认不启动TUN、不修改系统代理。
+
+部署使用 `cloudflare-worker.py`、两个systemd单元及 `install-worker.sh`。安装前上传SHA256SUMS与二进制；回滚脚本 `rollback-worker.sh` 停用新增实验服务并恢复 `/opt/hysteria-hdm/hysteria.before-worker-wss`，保留Cloudflare资源与凭据。执行停服/回滚须符合当前会话授权及审批要求。
+
+运行配置包含独立Worker接入令牌。Cloudflare管理令牌保存在Git外受限目录；其到期不等于已部署Worker自动下线。CLI认证前入口失效会连接失败，认证后UDP故障仍由QUIC超时结束，无自动fallback。

@@ -61,3 +61,28 @@ test("未认证不得创建后端，路径与升级请求严格检查", async ()
   assert.equal((await request("/hdm/connect", { Authorization: "Bearer secret", Upgrade: "websocket" })).status, 502);
   assert.equal(connected, 1);
 });
+
+// 原生平台默认 Blob：模拟升级链路，确保接收前已改为 ArrayBuffer。
+test("升级之前固定二进制类型和回环后端", async () => {
+  const SavedPair = globalThis.WebSocketPair;
+  const SavedResponse = globalThis.Response;
+  let accepted = false, backend;
+  const ws = new EventTarget(); ws.binaryType = "blob";
+  ws.accept = () => { assert.equal(ws.binaryType, "arraybuffer"); accepted = true; };
+  ws.send = () => {}; ws.close = () => {};
+  let control;
+  const socket = { readable: new ReadableStream({ start(c) { control = c; } }), writable: new WritableStream(), close() {} };
+  try {
+    globalThis.WebSocketPair = class { constructor() { this[0] = {}; this[1] = ws; } };
+    globalThis.Response = class { constructor(body, init) { this.status = init.status; this.webSocket = init.webSocket; } };
+    const response = await worker.fetch(new Request("https://example.com/hdm/connect", { headers: { Authorization: "Bearer test-token", Upgrade: "websocket" } }), {
+      HDM_TOKEN: "test-token", HDM_VPC: { connect(target) { backend = target; return socket; } }
+    });
+    assert.equal(response.status, 101); assert.equal(accepted, true);
+    assert.equal(backend, "127.0.0.1:18080");
+  } finally {
+    ws.dispatchEvent(new Event("close"));
+    globalThis.WebSocketPair = SavedPair; globalThis.Response = SavedResponse;
+    await tick();
+  }
+});

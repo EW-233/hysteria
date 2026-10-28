@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apernet/hysteria/extras/v2/transport/packetframe"
@@ -51,7 +52,17 @@ func DialWebSocket(c WSConfig, target *net.UDPAddr, listen udphop.ListenUDPFunc)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.ConnectTimeout)
 	defer cancel()
-	d := websocket.Dialer{HandshakeTimeout: c.ConnectTimeout, ReadBufferSize: 4096, WriteBufferSize: 4096}
+	var raw *boundedWSConn
+	d := websocket.Dialer{HandshakeTimeout: c.ConnectTimeout, ReadBufferSize: 4096, WriteBufferSize: 4096,
+		NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			raw = &boundedWSConn{Conn: conn}
+			return raw, nil
+		},
+	}
 	ws, response, err := d.DialContext(ctx, c.URL, http.Header{"Authorization": []string{"Bearer " + c.Token}})
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -60,7 +71,7 @@ func DialWebSocket(c WSConfig, target *net.UDPAddr, listen udphop.ListenUDPFunc)
 		return nil, errors.New("worker WSS connection failed: " + err.Error())
 	}
 	ws.SetReadLimit(packetframe.MaxSize)
-	pc := &wsPacketConn{ws: ws, target: target, expires: time.Now().Add(c.HandshakeTimeout)}
+	pc := &wsPacketConn{ws: ws, raw: raw, target: target, expires: time.Now().Add(c.HandshakeTimeout)}
 	// 控制帧应答也受写超时约束；关闭底层连接可立即唤醒阻塞的读写。
 	if err := pc.SetDeadline(time.Time{}); err != nil {
 		_ = pc.Close()
@@ -76,6 +87,7 @@ func DialWebSocket(c WSConfig, target *net.UDPAddr, listen udphop.ListenUDPFunc)
 
 type wsPacketConn struct {
 	ws              *websocket.Conn
+	raw             *boundedWSConn
 	target          net.Addr
 	expires         time.Time
 	readMu, writeMu sync.Mutex
@@ -115,11 +127,41 @@ func (p *wsPacketConn) bounded(t time.Time) time.Time {
 	return t
 }
 func (p *wsPacketConn) SetDeadline(t time.Time) error {
-	return p.ws.UnderlyingConn().SetDeadline(p.bounded(t))
+	if err := p.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return p.SetWriteDeadline(t)
 }
 func (p *wsPacketConn) SetReadDeadline(t time.Time) error {
 	return p.ws.UnderlyingConn().SetReadDeadline(p.bounded(t))
 }
 func (p *wsPacketConn) SetWriteDeadline(t time.Time) error {
-	return p.ws.UnderlyingConn().SetWriteDeadline(p.bounded(t))
+	t = p.bounded(t)
+	if p.raw != nil {
+		p.raw.writeLimit.Store(t.UnixNano())
+		return p.raw.SetWriteDeadline(t)
+	}
+	// 测试中的手工连接也保持相同的硬期限。
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	if err := p.ws.SetWriteDeadline(t); err != nil {
+		return err
+	}
+	return p.ws.UnderlyingConn().SetWriteDeadline(t)
+}
+
+// boundedWSConn 在 TCP 层约束 Gorilla 内部的 deadline 重设，兼容 TLS 包装与并发截止时间更新。
+type boundedWSConn struct {
+	net.Conn
+	writeLimit atomic.Int64
+}
+
+func (c *boundedWSConn) SetWriteDeadline(t time.Time) error {
+	if value := c.writeLimit.Load(); value != 0 {
+		limit := time.Unix(0, value)
+		if t.IsZero() || t.After(limit) {
+			t = limit
+		}
+	}
+	return c.Conn.SetWriteDeadline(t)
 }
