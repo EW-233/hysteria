@@ -3,7 +3,7 @@
 本仓库保留 Hysteria 上游历史，以 `fb25dc852ebbc70658e67889f411887a82b7c281` 为开发基线。审核自有改动可运行：
 
 ```sh
-git diff fb25dc852ebbc70658e67889f411887a82b7c281..main
+git diff fb25dc852ebbc70658e67889f411887a82b7c281..HEAD
 ```
 
 ## 审核范围
@@ -38,3 +38,19 @@ node --test workers/hdm/index.test.mjs
 公开历史中的 `192.0.2.10` 和 `192.0.2.20` 分别代指维护服务器和实验服务器，`hdm.example.com`、`YOUR_SUBDOMAIN` 与 `<workspace>` 等均是占位符。部署记录中的这些地址经过替换，不能直接照抄运行，也不能将占位符当作实测地址。
 
 13 个个人开发提交在发布副本中完成历史脱敏，提交 SHA 与私人开发检出不同。上游历史和作者归属保持原样；测试中的虚拟身份与上游许可证署名保留。源码审核并不等于对所有第三方依赖、生产部署和公网抗干扰能力的完整认证。
+
+## Fork 与协作分支
+
+本仓库是 `HyNetworks/hysteria` 的正式 fork。`master` 保留上游基线；实验修改位于 `codex/hdm-handshake-migration`，新增提交使用 GitHub noreply 邮箱。审核时请选择实验分支。
+
+其他 Hysteria 检出可以添加此 fork 并获取分支：
+
+```sh
+git remote add hdm https://github.com/EW-233/hysteria.git
+git fetch hdm
+git diff master...hdm/codex/hdm-handshake-migration
+```
+
+如本地已存在 `hdm` 远端，请复用或选择其他名字。审核后在目标分支合并 `hdm/codex/hdm-handshake-migration`；也可选择单个提交进行 cherry-pick。是否能无冲突合并取决于目标分支的改动。
+
+向上游提交 PR 时，base 选择 `HyNetworks/hysteria:master`，head 选择 `EW-233/hysteria:codex/hdm-handshake-migration`。当前只发布分支，尚未创建 PR。
