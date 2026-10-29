@@ -1,5 +1,7 @@
 # Worker HDM 本地 PoC（M1）
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 ## 行为和边界
 
 认证之前：CLI → 本地 TCP Bridge → 独占 UDP socket → 唯一 HY2 监听器。
@@ -112,7 +114,7 @@ HTTP 初版测试的服务端在读完请求体前写响应，受到 HTTP/1 默�
 
 ### 已构建程序验收
 
-`bfe377c` 构建出版本 `0.4.2-worker-local` 的 Windows/Linux amd64 CLI 和 Bridge，
+`74180a9` 构建出版本 `0.4.2-worker-local` 的 Windows/Linux amd64 CLI 和 Bridge，
 两平台启动检查均通过。随后执行：
 
 ```powershell

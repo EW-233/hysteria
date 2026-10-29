@@ -1,5 +1,7 @@
 # Worker KEX：第一阶段实现记录
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 日期：2026-10-28。本文记录 0.6.0 的本地实验握手与待接入状态。
 后续的隔离 QUIC 回环实现及 B2 状态映射见 [外部密钥 PoC](worker-kex-quic-poc.md)，
 接入租约与授权状态见 [接入组件](worker-kex-admission.md)。正常构建仍未接入新数据面。
@@ -173,7 +175,7 @@ go test ./client ./server ./internal/protocol ./internal/integration_tests -shor
 - 15 秒、4 worker 的解析器模糊测试：完成 1,473,300 次执行，无失败。
 - 现有 `client`、`server`、`internal/protocol` 单测：通过。
 - `internal/integration_tests` 回归：未全部通过，`TestClientServerUDPStress` 的四组场景均收到 0 个 UDP 回包。
-- 使用 `git archive` 导出未改动的 `27b9909` 提交，在独立临时目录、`GOWORK=off` 下运行同一 UDP 压测，复现相同的四组失败。
+- 使用 `git archive` 导出未改动的 `6105c17` 提交，在独立临时目录、`GOWORK=off` 下运行同一 UDP 压测，复现相同的四组失败。
   该失败在本轮实现前的代码上也存在，根因尚未确定，不把它归因于环境，也不把本次回归写成全部通过。
 - 不用这组压力测试替代用户此前公网 DNS 间歇超时的诊断，两者是否相关仍未知。
 

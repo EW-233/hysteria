@@ -1,14 +1,16 @@
 # Throne 原生迁移开发索引（2026-10-27）
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 本轮按用户要求先改代码。以 GitHub 最新正式版 Throne 1.3.2 及其锁定的 sing-box、sing-quic 为基线，未部署新客户端、未改服务器、未创建 PR。
 
 实际代码位于相邻仓库，分支均为 `codex/hy2-post-auth-migration`：
 
 | 仓库路径 | 提交 | 内容 |
 | --- | --- | --- |
-| `D:/code/web/Throne-hdm` | `503ea62`、`08b99b0`、`42b6058` | 节点编辑、持久化、配置生成、分享及去重；本地 workspace、构建脚本和依赖校验 |
-| `D:/code/web/sing-box-hdm` | `cc02ae74` | handshake_migration 配置、参数传递及 detour 互斥 |
-| `D:/code/web/sing-quic-hdm` | `1577e14` | HTTP 233 后更换 UDP socket 与数据端口、保留同一 QUIC 会话及测试 |
+| `D:/code/web/Throne-hdm` | `5744455`、`5d20917`、`67ca2b1` | 节点编辑、持久化、配置生成、分享及去重；本地 workspace、构建脚本和依赖校验 |
+| `D:/code/web/sing-box-hdm` | `358d7fad` | handshake_migration 配置、参数传递及 detour 互斥 |
+| `D:/code/web/sing-quic-hdm` | `56918b3` | HTTP 233 后更换 UDP socket 与数据端口、保留同一 QUIC 会话及测试 |
 
 完整说明：`D:/code/web/Throne-hdm/docs/handshake-migration.md`。
 

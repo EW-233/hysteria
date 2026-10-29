@@ -1,5 +1,7 @@
 # Throne 原生 KEX 测试包
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 本轮目标是把已验证的带外握手客户端编入 ThroneCore，使用 Throne 原有 TUN、DNS、路由和自定义节点功能。GUI 沿用已换用户头像的 1.3.2-hdm.0.3.2，原生核心版本为 1.14-kex.0.9.0。
 
 ## 结构与行为
@@ -36,7 +38,7 @@ python scripts/hdm/package-throne-kex.py --config C:/Users/668/.codex/secrets/hd
 
 - 交付：`build/throne-kex/Throne-KEX-0.9.0-windows-x64.zip`，59,848,703 字节。
 - ZIP SHA256：`fe4530af7d20cfbdcc8f2f0a338c85adfb1d7965e63dafae817eb6abe8da0ec4`。
-- 构建来源：dual-hy2 `d44f89a0`、Throne `030808f1`、sing-box `cc02ae74`、sing-quic `1577e148`。两个仓库原有未提交 `go.work.sum` 保留，构建使用独立 workspace。
+- 构建来源：dual-hy2 `50a86714`、Throne `900096e7`、sing-box `358d7fad`、sing-quic `56918b34`。两个仓库原有未提交 `go.work.sum` 保留，构建使用独立 workspace。
 - QUIC 补丁 SHA256：`9dd3ef2a52e8e69316da0ed4f0e824736848c8b9a1485d4ed79bee704a34d7a3`。
 - 原生核心在源码提交后重新构建；这一轮跳过已通过的本地回归，因此 build-info 的 `tests_run:false` 表示本次构建调用未重复测试，不表示之前未测试。
 - 包内文件哈希、ZIP 完整性、SQLite integrity_check 和原生 custom 节点回读全部通过。包内无 ExtraCore 二进制，节点、TUN、系统代理均默认不启动。

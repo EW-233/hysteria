@@ -1,5 +1,7 @@
 # Worker KEX：外部密钥 QUIC 回环 PoC
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 日期：2026-10-28。对应 P1 与 B2 的本地数据面验证。
 设计依据：[设计](worker-kex-design.md)；Noise 编码与导出规则见[基础实现](worker-kex-implementation.md)。
 
@@ -74,7 +76,7 @@ go -C core vet ./internal/kex
 参数错配、重复导入、父 context 取消、idle 回收与其它来源重放。
 测试不读取现有节点密钥，不连接 VPS，不替换 Throne 或运行中的客户端。
 
-原有 UDPStress 四组收零回包的问题在未改动的 27b9909 上也复现，仍未定位；
+原有 UDPStress 四组收零回包的问题在未改动的 6105c17 上也复现，仍未定位；
 本阶段未重新运行那组测试，也未把它与早前公网 DNS 间歇超时归为同因。
 此处通过的范围不包括公网接入、HY2 业务、TUN 路由或长期使用。
 

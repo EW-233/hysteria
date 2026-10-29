@@ -1,7 +1,9 @@
 # Worker KEX：设备认证与带外握手设计
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 日期：2026-10-28。状态：设计草案 v0.1；尚未实现，不是可直接发布的密码协议规格。
-代码基线：`c3004b2`（0.5.6），分支 `codex/worker-hdm-local`。
+代码基线：`cf63552`（0.5.6），分支 `codex/worker-hdm-local`。
 
 后续实现记录见 `worker-kex-implementation.md`；真实 UDP、HY2 与 Worker 的实验进度及验证边界见 `worker-kex-network-acceptance.md`。Throne 原生出站尚未集成。
 本文保留设计阶段的范围与验收要求；以下“本轮”指设计文档提交时的范围。

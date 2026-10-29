@@ -1,8 +1,10 @@
 # Worker HDM：M0 审计与 M1 本地验证设计
 
+> 提交标识说明：本页项目提交 SHA 已映射为身份改写后的等价文件树提交；原构建时的 SHA 记录仅保留在本机。
+
 ## 范围与基线
 
-基线：`fc46203`，原有同 IP 双端口 HDM 保留。依赖为
+基线：`fd51232`，原有同 IP 双端口 HDM 保留。依赖为
 `github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c`。
 本阶段只开发官方 CLI、本地 TCP-to-UDP Bridge 和跨源 IP 的集成测试。
 不部署 Cloudflare、Tunnel 或 VPS，不移植 Throne，不开通付费服务。
