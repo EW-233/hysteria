@@ -70,3 +70,14 @@ UDP 进一步对照：
 当前是独立实验 CLI/TUN 包。ThroneCore 原生出站尚未集成，因此没有交付去除 ExtraCore 的新 Throne 客户端。本协议替换 QUIC 的 TLS 握手，需要配套客户端与服务端，不能导入普通 hysteria2 分享链接。
 
 不自动重试 KEX、不自动重连、不回退普通 HY2/WSS/备用节点。网络切换、睡眠恢复与长期运行尚未验收；原旧 UDPStress 基线也有失败，不能据此宣称全仓库回归全绿。
+
+
+## 交付包复测与清理
+
+实现提交 `df955545a6b7c0992c4873cf6b78ffe638c4797e` 后重新构建，二进制和构建清单均指向该提交；唯一保留的工作区改动为原有 `go.work.sum`。最终 Linux 二进制 SHA256：`dae5ed1a534b9c6ba184468e85f48ba91fdab86535e5f7bee8ef0ea520474dce`，已与服务器文件校验一致。
+
+从实际交付 Windows 包运行 probe：建连 2136 ms，HTTPS 200（533 ms），该次单个 UDP DNS 未返回，整体在 30 秒截止时以 `udp_failed` 退出。保留 `build/kex/final-package-probe.json`；没有重试到成功后覆盖这个失败结果。此结果再次说明交付包可完成握手与 TCP，但 UDP 仍不能视为稳定可用。
+
+临时 UDP 对照进程、额外诊断 HTTPS 监听、测试防火墙规则/恢复计时器、抓包进程与本地管理 CONNECT 代理已结束。独立 `hy2-kex-experiment` 及三项原有服务保持 active，实验仅监听 UDP 28443 和 TCP 18443。
+
+本机私密测试包：`build/kex-cli/KEX-0.8.0-manual-test.zip`，包含真实设备配置；不提交、不公开发布。TUN 启动需要用户关闭已有 Throne TUN 后手动提权测试；本轮未启动第二个 TUN。
