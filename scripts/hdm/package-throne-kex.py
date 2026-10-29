@@ -20,6 +20,7 @@ def sha(path):
 
 def create_database(path, source, outbound):
     # 从配套 GUI 的源码提取结构，创建全新数据库，避免带入原客户端的私人节点。
+    # 启用 GUI 自带的随机监听端口，避免固定 2082 与 WSL 或其他本机代理冲突。
     profile = {'name':'US13 · HTTPS握手 / UDP直连', 'type':'custom', 'subtype':'outbound',
                'config':json.dumps(outbound,ensure_ascii=False)}
     with sqlite3.connect(path) as db:
@@ -41,7 +42,7 @@ def create_database(path, source, outbound):
         settings = {'language':'2','current_group':'0','current_route_id':'1','remember_id':'1',
                     'remember_enable':'false','system_proxy_enabled':'false','tun_mode_enabled':'false',
                     'url_scheme_auto_register':'false','file_assoc_auto_register':'false',
-                    'inbound_address':'127.0.0.1','inbound_socks_port':'2082','vpn_ipv6':'true',
+                    'inbound_address':'127.0.0.1','inbound_socks_port':'2082','random_inbound_port':'true','vpn_ipv6':'true',
                     'enable_tun_routing':'true','core_box_api_port':'-9091','core_box_api_secret':secrets.token_hex(24),
                     'sub_auto_update':'-30','remote_dns':'https://1.1.1.1/dns-query','dns_final_out':'remote',
                     'log_level':'info','log_file_level':'info','route_auto_update':'-1440'}
@@ -118,6 +119,7 @@ def main():
 2. 完整解压到新目录；双击 Throne.exe（或 start-throne.cmd）。不要覆盖旧客户端。
 3. 启动预置的 US13 · HTTPS握手 / UDP直连 节点，然后启用 Throne 的 TUN 模式。
    如出现管理员权限提示，请确认；本包默认不自动启动节点、不改系统代理。
+   本地 SOCKS/HTTP 入站使用随机可用端口，当前端口以 GUI 显示为准。
 4. 在普通浏览器打开 Speedtest。对比时请手动选择与常规 Throne 相同的测速服务器。
 5. 若失败，停止后重新启动节点；本实验版不自动重连、不降级为普通 HY2。
 

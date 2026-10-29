@@ -46,3 +46,13 @@ python scripts/hdm/package-throne-kex.py --config C:/Users/668/.codex/secrets/hd
 手动重新运行测试、创建新会话后：一次 KEX 成功，trace 233 字节耗时 2941 ms（含建立）；5,000,000 字节下载耗时 2873 ms；UDP DNS 回复 61 字节，UDP 子测试约 170 ms，完整测试通过。结束测试时的 stream canceled 日志来自主动清理。未因此更换入口、协议参数或开启自动重试。
 
 第一次 HTTPS 超时的根因仍未确定，保留日志 `build/throne-kex/packaged-live-test.log`；成功日志为 `packaged-live-test-second.log`。这证明最终节点可用，不等于长时间稳定性已验证。未启动用户 GUI 或第二个 TUN；下一步由用户退出旧客户端后，在新包里启用 TUN 手测。
+
+## 本机入站端口冲突修正（2026-10-29）
+
+用户 GUI 启动在 DNS 入站之后失败。现场查到原测试包的固定 `127.0.0.1:2082` 被 `wslrelay.exe` 占用；绑定测试返回 Windows 10048，5533 可用。此前公网验收替换了测试入站为随机端口，因此漏掉了交付默认值与本机服务的冲突。
+
+打包脚本改为 `random_inbound_port=true`，沿用 GUI 已有的每次启动选择可用端口功能；首次在设置里勾选“随机端口”并保存也会立即选择新端口。核心二进制与协议参数未改。未停止 WSL、已有 Throne 或修改正在运行的 GUI 数据库；窗口工具 native pipe 不可用，现有客户端需用户修改该选项或使用新包。
+
+修正版：`build/throne-kex/Throne-KEX-0.9.0-portfix-windows-x64.zip`。
+SHA256：`ddb7f225a9c8cc2e4f9d2b676f0ac66f6202069dc59211d1f6a8917cf868dcb1`。
+新包 SQLite 完整性、随机端口设置及全文件哈希验证通过；保留原包以便回溯。原生版 TUN 实际运行仍待用户继续手测。
