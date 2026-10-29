@@ -1,6 +1,7 @@
 # Worker KEX：第一阶段实现记录
 
-日期：2026-10-28。阶段：本地实验握手与待接入状态；未接入 QUIC 数据面。
+日期：2026-10-28。本文记录 0.6.0 的本地实验握手与待接入状态。
+后续的隔离 QUIC 回环实现及 B2 状态映射见 [外部密钥 PoC](worker-kex-quic-poc.md)。正常构建仍未接入新数据面。
 设计依据：`worker-kex-design.md`。新增代码位于 `core/internal/kex`。
 
 ## 本轮交付与边界
@@ -10,7 +11,7 @@
 本地 TLS 集成测试使用临时生成的密钥、回环地址与测试证书，不读取现有节点凭据。
 
 **返回 Result 仅表示带外握手成功，不表示 UDP 可达或 HY2 已连接。**
-Broker 没有 ACTIVE 转换接口，也没有把密钥注入 quic-go。
+本阶段 Broker 没有 ACTIVE 转换接口；后续仅在隔离回环实验中导入 quic-go 密钥。
 现有 HY2 客户端、服务器与 Throne 运行路径都没有调用本包。
 
 尚未实现：Worker 转发脚本、VPS 原始 TCP/TLS 长度帧入口、UDP 密钥确认/路径验证/READY、
@@ -174,7 +175,10 @@ go test ./client ./server ./internal/protocol ./internal/integration_tests -shor
   该失败在本轮实现前的代码上也存在，根因尚未确定，不把它归因于环境，也不把本次回归写成全部通过。
 - 不用这组压力测试替代用户此前公网 DNS 间歇超时的诊断，两者是否相关仍未知。
 
-## 下一阶段
+## 后续进度
+
+独立本地注入 PoC 已完成，详见 [外部密钥 PoC](worker-kex-quic-poc.md)。以下公网/业务步骤仍待实现。
+
 
 1. 给 quic-go 定义外部握手构造与事件映射，先完成 B2 子规格和本地注入 PoC。
 2. 接入短包头控制、双向确认、按路径反放大与 READY，验证 key update、CID 轮换和失败回收。

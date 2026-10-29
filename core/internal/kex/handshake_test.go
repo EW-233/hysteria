@@ -375,3 +375,45 @@ func TestPendingCollectedWithoutNewRequests(t *testing.T) {
 		return len(f.b.pending) == 0 && len(f.b.cids) == 0 && len(f.b.records) == 1
 	}, 3*time.Second, 10*time.Millisecond)
 }
+
+// CID 选定后才构造参数，保证握手认证绑定的字节与外部 QUIC 构造完全一致。
+func TestCIDBoundParameterBuilder(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.TransportParameters = nil
+	f.cfg.BuildParameters = func(local, peer [16]byte) ([]byte, error) {
+		require.NotEqual(t, [16]byte{}, local)
+		require.Equal(t, [16]byte{}, peer)
+		return append([]byte{9}, local[:]...), nil
+	}
+	c, req := f.client(t)
+	response, err := f.b.Handle(context.Background(), req)
+	require.NoError(t, err)
+	result, err := c.finish(response, f.clock.now())
+	require.NoError(t, err)
+	f.b.mu.Lock()
+	params := bytes.Clone(f.b.pending[result.SessionID].request.parameters)
+	f.b.mu.Unlock()
+	require.Equal(t, append([]byte{9}, result.ClientCID[:]...), params)
+	cfg := f.cfg
+	cfg.TransportParameters = []byte{1}
+	_, err = NewClientHandshake(cfg)
+	require.ErrorIs(t, err, ErrConfig)
+	cfg = f.cfg
+	cfg.BuildParameters = func([16]byte, [16]byte) ([]byte, error) { return make([]byte, MaxTransportParameters+1), nil }
+	_, err = NewClientHandshake(cfg)
+	require.ErrorIs(t, err, ErrConfig)
+	cfg.BuildParameters = func([16]byte, [16]byte) ([]byte, error) { return nil, ErrCapacity }
+	_, err = NewClientHandshake(cfg)
+	require.ErrorIs(t, err, ErrConfig)
+}
+
+func TestServerParameterBuilderFailureDoesNotReserve(t *testing.T) {
+	f := newFixture(t, func(cfg *ServerConfig) {
+		cfg.TransportParameters = nil
+		cfg.BuildParameters = func([16]byte, [16]byte) ([]byte, error) { return nil, ErrConfig }
+	})
+	_, req := f.client(t)
+	_, err := f.b.Handle(context.Background(), req)
+	require.ErrorIs(t, err, ErrConfig)
+	require.Equal(t, Stats{}, f.b.Stats())
+}

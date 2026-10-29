@@ -1,2 +1,5 @@
 # Linux 部署脚本在 Windows 检出时也保留 LF。
 scripts/hdm/*.sh text eol=lf
+
+# 固定实验补丁为 LF，确保跨平台应用后的源码校验和一致。
+/scripts/hdm/quic-kex.patch text eol=lf -whitespace

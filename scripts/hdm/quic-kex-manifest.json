@@ -1,0 +1,35 @@
+{
+  "module": "github.com/apernet/quic-go",
+  "version": "v0.63.1-0.20261004180939-a10df75c260c",
+  "sum": "h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=",
+  "files": {
+    "connection.go": {
+      "before": "352857eac915289e4bc5e3ebd7713193b8da7947b1463ec359bb8ea899be4715",
+      "after": "bb20b5e9a802aec0c27afbe2fef925d41c16cf4d6e74740ce193bdca1650c371"
+    },
+    "transport.go": {
+      "before": "2b0cdde22d35a0763aa8371522f3e86a3339f08cacd7db24980ba6f17127cb0b",
+      "after": "5e95200430293af87cdb889d4bdf2499cd9121dc5376fd5e6a5a6c01eaabb8f3"
+    },
+    "sys_conn_windows_test.go": {
+      "before": "132ec738c95fa524f0664f99dbdaf75ceda5ff2c48c6b1df8bceac0e31e37cb7",
+      "after": "f25450fade8d2fda4ee05eb7cbf4d92a7dbcdc56a9d700ca0b0efa8d2ce1dc0c"
+    },
+    "external_kex.go": {
+      "before": null,
+      "after": "f24d68a6309fc5142802a61547f494b9ab7eebd94c2ea426bf32039dd2476fe0"
+    },
+    "external_kex_test.go": {
+      "before": null,
+      "after": "b7adccc4d697892287479a13d7e373e4a14bcccd0ac3e415f1829a1534ffa203"
+    },
+    "internal/handshake/external_kex.go": {
+      "before": null,
+      "after": "4c7621ab02e7e2f258ba0081b4e51ef74e4434d555492eb98447798bde261960"
+    },
+    "internal/handshake/external_kex_test.go": {
+      "before": null,
+      "after": "b30b2e6a06e0277685026fd632672ed757d42184d2c19fb977e4c9d50d493f42"
+    }
+  }
+}

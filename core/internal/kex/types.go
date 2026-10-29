@@ -42,13 +42,18 @@ type Policy struct {
 
 func (p Policy) valid() bool { return validText(p.Principal) && !(p.RxAuto && p.Rx != 0) }
 
-// ClientConfig 的传输参数目前作为认证绑定的有界字节串，语义校验由后续 QUIC 适配负责。
+// ParameterBuilder 必须是有界、无副作用的纯函数，不得重新进入 Broker。
+// local/peer 是本次握手选定的 CID；客户端调用时 peer 尚未知，为零。
+type ParameterBuilder func(local, peer [16]byte) ([]byte, error)
+
+// ClientConfig 绑定传输参数；实际 QUIC 参数的语义由数据面适配校验。
 type ClientConfig struct {
 	ServiceID           string
 	DevicePrivateKey    [32]byte
 	ServerPublicKey     [32]byte
 	UDPAddress          netip.AddrPort
 	TransportParameters []byte
+	BuildParameters     ParameterBuilder
 	MaxRx               uint64
 }
 
@@ -58,6 +63,7 @@ type ServerConfig struct {
 	PrivateKey          [32]byte
 	UDPAddress          netip.AddrPort
 	TransportParameters []byte
+	BuildParameters     ParameterBuilder
 	MaxPending          int
 	MaxPendingPerDevice int
 	MaxReplayRecords    int
@@ -130,3 +136,24 @@ func validAddress(a netip.AddrPort) bool {
 }
 func validParameters(b []byte) bool    { return len(b) > 0 && len(b) <= MaxTransportParameters }
 func invalidConfig(field string) error { return fmt.Errorf("%w: %s", ErrConfig, field) }
+
+// 固定参数和按 CID 构造参数只能配置一种，防止静默覆盖已认证的协商内容。
+func validParameterSource(raw []byte, build ParameterBuilder) bool {
+	if build != nil {
+		return len(raw) == 0
+	}
+	return validParameters(raw)
+}
+func buildParameters(raw []byte, build ParameterBuilder, local, peer [16]byte) ([]byte, error) {
+	if build != nil {
+		var err error
+		raw, err = build(local, peer)
+		if err != nil {
+			return nil, invalidConfig("transport parameter builder")
+		}
+	}
+	if !validParameters(raw) {
+		return nil, invalidConfig("transport parameters")
+	}
+	return append([]byte(nil), raw...), nil
+}

@@ -78,7 +78,7 @@ func NewClientHandshake(cfg ClientConfig) (*ClientHandshake, error) {
 	return newClientHandshake(cfg, time.Now())
 }
 func newClientHandshake(cfg ClientConfig, now time.Time) (*ClientHandshake, error) {
-	if !validText(cfg.ServiceID) || cfg.ServerPublicKey == [32]byte{} || !validAddress(cfg.UDPAddress) || !validParameters(cfg.TransportParameters) {
+	if !validText(cfg.ServiceID) || cfg.ServerPublicKey == [32]byte{} || !validAddress(cfg.UDPAddress) || !validParameterSource(cfg.TransportParameters, cfg.BuildParameters) {
 		return nil, ErrConfig
 	}
 	hs, static, err := noiseState(true, cfg.ServiceID, cfg.DevicePrivateKey, cfg.ServerPublicKey)
@@ -96,6 +96,10 @@ func newClientHandshake(cfg ClientConfig, now time.Time) (*ClientHandshake, erro
 		return nil, err
 	}
 	if _, err = rand.Read(p.cid[:]); err != nil {
+		return nil, err
+	}
+	p.parameters, err = buildParameters(cfg.TransportParameters, cfg.BuildParameters, p.cid, [16]byte{})
+	if err != nil {
 		return nil, err
 	}
 	msg, _, _, err := hs.WriteMessage(nil, encodeRequest(p))

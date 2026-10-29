@@ -51,7 +51,7 @@ type Stats struct{ Pending, ReplayRecords int }
 
 func NewBroker(cfg ServerConfig) (*Broker, error) { return newBroker(cfg, time.Now) }
 func newBroker(cfg ServerConfig, now func() time.Time) (*Broker, error) {
-	if !validText(cfg.ServiceID) || !validAddress(cfg.UDPAddress) || !validParameters(cfg.TransportParameters) {
+	if !validText(cfg.ServiceID) || !validAddress(cfg.UDPAddress) || !validParameterSource(cfg.TransportParameters, cfg.BuildParameters) {
 		return nil, ErrConfig
 	}
 	if _, err := PublicKey(cfg.PrivateKey); err != nil {
@@ -196,6 +196,10 @@ func (b *Broker) Handle(ctx context.Context, request []byte) ([]byte, error) {
 	}
 	response := responsePayload{requestID: req.id, requestHash: hash, address: cfg.UDPAddress, lifetime: MaxPendingLifetime, policy: d.policy, parameters: cfg.TransportParameters}
 	if err := b.allocateIDsLocked(&response, req.cid); err != nil {
+		return nil, err
+	}
+	response.parameters, err = buildParameters(cfg.TransportParameters, cfg.BuildParameters, response.cid, req.cid)
+	if err != nil {
 		return nil, err
 	}
 	encrypted, c1, c2, err := hs.WriteMessage(nil, encodeResponse(response))
