@@ -1628,3 +1628,223 @@
 +	require.True(t, verified)
 +	require.Equal(t, infos[0], c.externalPath.info)
 +}
+--- /dev/null
++++ b/external_datagram.go
+@@ -0,0 +1,71 @@
++//go:build kex_poc
++
++package quic
++
++import (
++	"context"
++	"errors"
++
++	"github.com/apernet/quic-go/internal/protocol"
++	"github.com/apernet/quic-go/internal/wire"
++)
++
++// SendDatagramContext 在队列满时允许取消当前入队，不影响共享连接。
++// 成功入队后的报文仍遵循 SendDatagram 的语义，取消不撤回已入队的报文。
++func (c *Conn) SendDatagramContext(ctx context.Context, p []byte) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	if !c.supportsDatagrams() {
++		return errors.New("datagram support disabled")
++	}
++	f := &wire.DatagramFrame{DataLenPresent: true}
++	maxDataLen := min(f.MaxDataLen(c.peerMaxDatagramFrameSize(), c.version), protocol.ByteCount(c.maxPayloadSizeEstimate.Load()))
++	if protocol.ByteCount(len(p)) > maxDataLen {
++		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
++	}
++	f.Data = append([]byte(nil), p...)
++	return c.datagramQueue.addContext(ctx, f)
++}
++
++// 等待与取消都发生在真实发送队列；取消的等待者必须把可用槽位通知交给其他等待者。
++func (h *datagramQueue) addContext(ctx context.Context, f *wire.DatagramFrame) error {
++	for {
++		h.sendMx.Lock()
++		err := ctx.Err()
++		select {
++		case <-h.closed:
++			err = h.closeErr
++		default:
++		}
++		if err != nil {
++			if h.sendQueue.Len() < maxDatagramSendQueueLen {
++				select {
++				case h.sent <- struct{}{}:
++				default:
++				}
++			}
++			h.sendMx.Unlock()
++			return err
++		}
++		if h.sendQueue.Len() < maxDatagramSendQueueLen {
++			h.sendQueue.PushBack(f)
++			// 多次出队的通知可能合并；仍有空位时继续唤醒下一个会话。
++			if h.sendQueue.Len() < maxDatagramSendQueueLen {
++				select {
++				case h.sent <- struct{}{}:
++				default:
++				}
++			}
++			h.sendMx.Unlock()
++			h.hasData()
++			return nil
++		}
++		h.sendMx.Unlock()
++		select {
++		case <-ctx.Done():
++		case <-h.closed:
++		case <-h.sent:
++		}
++	}
++}
+--- /dev/null
++++ b/external_datagram_test.go
+@@ -0,0 +1,143 @@
++//go:build kex_poc
++
++package quic
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"testing/synctest"
++	"time"
++
++	"github.com/apernet/quic-go/internal/utils"
++	"github.com/apernet/quic-go/internal/wire"
++	"github.com/stretchr/testify/require"
++)
++
++// 构造只消费真实 DATAGRAM 入队 API 的连接，故意不启动出队，稳定制造背压。
++func newBlockedDatagramConn() *Conn {
++	c := &Conn{peerParams: &wire.TransportParameters{MaxDatagramFrameSize: 1200}, datagramQueue: newDatagramQueue(func() {}, utils.DefaultLogger)}
++	c.maxPayloadSizeEstimate.Store(1200)
++	return c
++}
++
++func TestExternalDatagramCancelQueueAndRecover(t *testing.T) {
++	synctest.Test(t, func(t *testing.T) {
++		c := newBlockedDatagramConn()
++		for range maxDatagramSendQueueLen {
++			require.NoError(t, c.SendDatagram([]byte("queued")))
++		}
++		ctx, cancel := context.WithCancel(context.Background())
++		result := make(chan error, 1)
++		go func() { result <- c.SendDatagramContext(ctx, []byte("canceled")) }()
++		synctest.Wait()
++		require.Empty(t, result)
++		cancel()
++		synctest.Wait()
++		require.ErrorIs(t, <-result, context.Canceled)
++		for range maxDatagramSendQueueLen {
++			require.Equal(t, []byte("queued"), c.datagramQueue.Peek().Data)
++			c.datagramQueue.Pop()
++		}
++		require.Nil(t, c.datagramQueue.Peek(), "取消的等待者不能随后入队")
++		payload := []byte("short-udp")
++		require.NoError(t, c.SendDatagramContext(context.Background(), payload))
++		payload[0] = 'X'
++		require.Equal(t, []byte("short-udp"), c.datagramQueue.Peek().Data)
++		c.datagramQueue.Pop()
++		require.NoError(t, c.SendDatagram([]byte("ordinary")), "旧发送 API 继续可用")
++	})
++}
++
++func TestExternalDatagramDeadlineAndConnectionClose(t *testing.T) {
++	synctest.Test(t, func(t *testing.T) {
++		c := newBlockedDatagramConn()
++		for range maxDatagramSendQueueLen {
++			require.NoError(t, c.SendDatagram([]byte{1}))
++		}
++		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++		defer cancel()
++		result := make(chan error, 1)
++		go func() { result <- c.SendDatagramContext(ctx, []byte{2}) }()
++		synctest.Wait()
++		time.Sleep(time.Second)
++		synctest.Wait()
++		require.ErrorIs(t, <-result, context.DeadlineExceeded)
++		go func() { result <- c.SendDatagramContext(context.Background(), []byte{3}) }()
++		synctest.Wait()
++		closed := errors.New("test connection closed")
++		c.datagramQueue.CloseWithError(closed)
++		synctest.Wait()
++		require.ErrorIs(t, <-result, closed)
++		c.datagramQueue.Pop()
++		require.ErrorIs(t, c.SendDatagramContext(context.Background(), []byte{4}), closed)
++	})
++}
++
++// 同时有取消者和正常等待者时，取消者不能吞掉唯一的空槽通知。
++func TestExternalDatagramCanceledWaiterDoesNotLoseWakeup(t *testing.T) {
++	for range 100 {
++		synctest.Test(t, func(t *testing.T) {
++			c := newBlockedDatagramConn()
++			for range maxDatagramSendQueueLen {
++				require.NoError(t, c.SendDatagram([]byte{1}))
++			}
++			ctx, cancel := context.WithCancel(context.Background())
++			canceled, live := make(chan error, 1), make(chan error, 1)
++			go func() { canceled <- c.SendDatagramContext(ctx, []byte("cancel")) }()
++			go func() { live <- c.SendDatagramContext(context.Background(), []byte("live")) }()
++			synctest.Wait()
++			cancel()
++			c.datagramQueue.Pop()
++			synctest.Wait()
++			require.ErrorIs(t, <-canceled, context.Canceled)
++			select {
++			case err := <-live:
++				require.NoError(t, err)
++			default:
++				t.Fatal("可用槽位通知丢失")
++			}
++		})
++	}
++}
++
++func TestExternalDatagramValidation(t *testing.T) {
++	c := newBlockedDatagramConn()
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	require.ErrorIs(t, c.SendDatagramContext(ctx, []byte{1}), context.Canceled)
++	var tooLarge *DatagramTooLargeError
++	require.ErrorAs(t, c.SendDatagramContext(context.Background(), make([]byte, 1201)), &tooLarge)
++	require.Nil(t, c.datagramQueue.Peek())
++}
++
++// 批量出队只留下一个通知时，所有空槽都应被不同会话继续使用。
++func TestExternalDatagramMultipleSlotsWakeAllWaiters(t *testing.T) {
++	synctest.Test(t, func(t *testing.T) {
++		c := newBlockedDatagramConn()
++		for range maxDatagramSendQueueLen {
++			require.NoError(t, c.SendDatagram([]byte{1}))
++		}
++		results := make(chan error, 8)
++		for range 8 {
++			go func() { results <- c.SendDatagramContext(context.Background(), []byte("live")) }()
++		}
++		synctest.Wait()
++		// 持锁一次释放多个槽位，模拟出队速度快于等待者被调度。
++		c.datagramQueue.sendMx.Lock()
++		for range 8 {
++			c.datagramQueue.sendQueue.PopFront()
++		}
++		c.datagramQueue.sent <- struct{}{}
++		c.datagramQueue.sendMx.Unlock()
++		synctest.Wait()
++		for range 8 {
++			select {
++			case err := <-results:
++				require.NoError(t, err)
++			default:
++				t.Fatal("空槽存在但等待者未被唤醒")
++			}
++		}
++	})
++}

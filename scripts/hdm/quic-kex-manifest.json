@@ -46,6 +46,14 @@
     "external_path_test.go": {
       "before": null,
       "after": "b3e57aab8519d359e1342a3e83d21cf489886a390a7f5619ef59f92fcbb62df3"
+    },
+    "external_datagram.go": {
+      "before": null,
+      "after": "6dc9876720bd09bbd2973ca661a25d0a40a7402658bbb2a58fec5775b0a26753"
+    },
+    "external_datagram_test.go": {
+      "before": null,
+      "after": "40a3187726270abe0fd8148acd71f07b56baf7b345bf8c9b3008697f2fe0ee8c"
     }
   }
 }

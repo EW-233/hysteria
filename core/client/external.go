@@ -4,6 +4,8 @@ package client
 
 import (
 	"context"
+	"github.com/apernet/hysteria/core/v2/internal/protocol"
+	"net"
 	"strings"
 	"sync"
 
@@ -90,4 +92,43 @@ func (c *externalClient) Close() error {
 		}
 	})
 	return nil
+}
+
+// DialExternalTCP 允许宿主核心取消单条 TCP 建连，只关闭对应流，不影响共享 QUIC 会话。
+func DialExternalTCP(ctx context.Context, c Client, address string) (net.Conn, error) {
+	external, ok := c.(*externalClient)
+	if !ok {
+		return nil, coreErrs.ConfigError{Field: "Client", Reason: "requires external client"}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	stream, err := external.openStream()
+	if err != nil {
+		return nil, wrapIfConnectionClosed(err)
+	}
+	// 取消必须中断写等待，优雅关闭只发送 FIN，不能释放受流控阻塞的 Write。
+	abort := func() {
+		stream.CancelWrite(0)
+		_ = stream.Close()
+	}
+	stop := context.AfterFunc(ctx, abort)
+	defer stop()
+	if err = protocol.WriteTCPRequest(stream, address); err == nil {
+		var accepted bool
+		var message string
+		accepted, message, err = protocol.ReadTCPResponse(stream)
+		if err == nil && !accepted {
+			err = coreErrs.DialError{Message: message}
+		}
+	}
+	if !stop() || ctx.Err() != nil {
+		abort()
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		abort()
+		return nil, wrapIfConnectionClosed(err)
+	}
+	return &tcpConn{Orig: stream, PseudoLocalAddr: external.conn.LocalAddr(), PseudoRemoteAddr: external.conn.RemoteAddr(), Established: true}, nil
 }
