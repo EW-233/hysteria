@@ -186,3 +186,10 @@ go test ./client ./server ./internal/protocol ./internal/integration_tests -shor
 2. 接入短包头控制、双向确认、按路径反放大与 READY，验证 key update、CID 轮换和失败回收。
 3. 已增加 pending 独占租约、两步激活与权限复核组件；仍需逐包公网适配和 HY2 初始化接入。
 4. 最后接入同进程 VPS 入口、Worker 与 ThroneCore；每一阶段独立提交和验收。
+
+
+## 0.8.0：真实路径与业务实验
+
+新增 `core/kexpoc` 统一管理 Noise 接入、外部 QUIC、路径与 READY 确认、原生 HY2 TCP/UDP 业务。`app/cmd/kex-poc` 提供独立 server/client/probe 与显式 TUN 模式。`extras/worker-kex` 使用短 TLS 帧连接同进程源站入口，不需要 WSS/Bridge/Tunnel。所有接入/生命周期改动仍隔离在 `kex_poc` 构建与固定补丁工作区。
+
+详见 [真实网络验收](worker-kex-network-acceptance.md)、[HY2 适配](worker-kex-hy2-adapter.md)、[Worker relay](worker-kex-relay.md)、[测试 CLI](worker-kex-test-cli.md)。构建脚本按补丁哈希选择新目录，保留原实验工作区，无需先清理旧补丁。

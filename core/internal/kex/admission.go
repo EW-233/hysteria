@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"math"
 	"net/netip"
@@ -339,4 +340,33 @@ func (b *Broker) removeActiveLocked(id [16]byte, cause error) {
 	clear(a.lease.paths)
 	delete(b.cids, a.cid)
 	delete(b.active, id)
+}
+
+// ClaimRequest 供同进程入口在返回 Noise 响应前登记数据面，避免用未认证 UDP 首包驱动昂贵构造。
+// 仅匹配本 Broker 已接受的完整请求；重复请求不会生成第二份数据面。
+func (b *Broker) ClaimRequest(parent context.Context, request []byte) (*PendingLease, error) {
+	if len(request) > MaxMessageSize {
+		return nil, ErrMessage
+	}
+	hash := sha256.Sum256(request)
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, ErrClosed
+	}
+	b.sweepLocked(b.now())
+	var cid [16]byte
+	for _, record := range b.records {
+		if record.hash == hash {
+			if p := b.pending[record.session]; p != nil {
+				cid = p.response.cid
+			}
+			break
+		}
+	}
+	b.mu.Unlock()
+	if cid == [16]byte{} {
+		return nil, ErrConsumed
+	}
+	return b.ClaimPending(parent, cid)
 }

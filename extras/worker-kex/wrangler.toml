@@ -1,0 +1,11 @@
+# 仅供配置参考；本次未部署。两个凭据通过 Worker secrets 单独设置。
+name = "worker-kex-relay"
+main = "worker.mjs"
+compatibility_date = "2026-10-28"
+
+[vars]
+UPSTREAM_HOST = "kex-origin.example.com"
+UPSTREAM_PORT = "8443"
+TIMEOUT_MS = "5000"
+# CLIENT_TOKEN 与 UPSTREAM_TOKEN 必须分别为独立随机生成的 64 位十六进制串。
+# 上游主机名必须 DNS-only，并具有匹配该主机名的可信 TLS 证书。

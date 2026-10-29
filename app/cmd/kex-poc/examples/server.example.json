@@ -1,0 +1,25 @@
+{
+  "service_id": "kex-test",
+  "private_key_hex": "REPLACE_WITH_SERVER_PRIVATE_KEY_HEX",
+  "udp_address": "203.0.113.10:20443",
+  "udp_listen": "0.0.0.0:20443",
+  "https": {
+    "listen": "0.0.0.0:8443",
+    "access_token": "REPLACE_WITH_HTTPS_ACCESS_TOKEN",
+    "cert_file": "server.crt",
+    "key_file": "server.key"
+  },
+  "relay": {
+    "listen": "0.0.0.0:9443",
+    "credential_hex": "REPLACE_WITH_32_BYTE_RELAY_CREDENTIAL_HEX"
+  },
+  "devices": [
+    {
+      "public_key_hex": "REPLACE_WITH_DEVICE_PUBLIC_KEY_HEX",
+      "principal": "test-device",
+      "udp_enabled": true,
+      "rx_auto": true,
+      "rx": 0
+    }
+  ]
+}

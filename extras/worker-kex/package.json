@@ -1,0 +1,6 @@
+{
+  "name": "worker-kex-relay",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test relay.test.mjs" }
+}

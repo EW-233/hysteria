@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""准备隔离的 QUIC 外部握手回环实验；校验固定依赖和补丁，不改全局模块缓存。"""
+"""准备隔离的 QUIC 外部握手实验；校验固定依赖和补丁，不改全局模块缓存。"""
 from __future__ import annotations
 
 import argparse
@@ -47,7 +47,7 @@ def workspace(folder: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", default="build/kex-poc", help="仓库 build 内的独立实验目录")
+    parser.add_argument("--output", default="build/kex-network", help="仓库 build 内的独立实验目录")
     args = parser.parse_args()
     folder = (ROOT / args.output).resolve()
     build = (ROOT / "build").resolve()
@@ -88,7 +88,7 @@ def main() -> None:
     verify_files(target, manifest, "after")
     (folder / "go.work").write_text(workspace(folder), encoding="utf-8", newline="\n")
     marker.write_text(json.dumps({"patch_sha256": patch_hash, "manifest": manifest}, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(f"Prepared loopback-only experiment: {folder}")
+    print(f"Prepared external-handshake experiment: {folder}")
     print(f"GOWORK={folder / 'go.work'}")
 
 

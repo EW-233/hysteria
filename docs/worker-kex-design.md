@@ -3,7 +3,7 @@
 日期：2026-10-28。状态：设计草案 v0.1；尚未实现，不是可直接发布的密码协议规格。
 代码基线：`c3004b2`（0.5.6），分支 `codex/worker-hdm-local`。
 
-后续实现记录见 `worker-kex-implementation.md`：已开始本地实验 KEX，尚未接入 QUIC、Worker 或 Throne。
+后续实现记录见 `worker-kex-implementation.md`；真实 UDP、HY2 与 Worker 的实验进度及验证边界见 `worker-kex-network-acceptance.md`。Throne 原生出站尚未集成。
 本文保留设计阶段的范围与验收要求；以下“本轮”指设计文档提交时的范围。
 
 本文承接用户已经确认的需求，规定后续实现的边界、状态和验收方法。
@@ -367,3 +367,8 @@ P1 的回环数据面已跑通；公网的路径验证、反放大、READY 与 H
 
 后续新增 [接入租约与路径状态组件](worker-kex-admission.md)：一次性密钥交接、到期/撤销取消、
 路径挑战与独立预算、两步激活及活动 CID 管理已通过状态测试；逐包公网适配与 READY 尚未实现。
+
+
+### 0.8.0 真实网络实验
+
+已连接真实 UDP 路径、可靠 READY 控制流、HY2 TCP/UDP 业务、Worker 单次短 TLS 转发和独立 CLI/TUN 入口。此后状态以 [真实网络验收](worker-kex-network-acceptance.md) 为准。上文 0.6/0.7 的“尚未接入”描述保留为历史阶段；公网测试成功与否需要独立实测记录，不能从本地回归推断。

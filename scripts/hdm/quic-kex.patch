@@ -1,17 +1,29 @@
 --- a/connection.go
 +++ b/connection.go
-@@ -193,6 +193,10 @@
+@@ -193,6 +193,12 @@
  	droppedInitialKeys bool
  	handshakeComplete  bool
  	handshakeConfirmed bool
 +
 +	// 外部回环模式的确认必须由控制协议触发，不能被普通 ACK 提前确认。
-+	externalConfirm   chan chan error
-+	externalConfirmed chan struct{}
++	externalConfirm            chan chan error
++	externalConfirmed          chan struct{}
++	externalPath               *externalPathState
++	externalAllowPeerKeyUpdate chan externalKeyUpdateRequest
  
  	receivedRetry       bool
  	versionNegotiated   bool
-@@ -613,6 +617,7 @@
+@@ -609,10 +615,17 @@
+ 		c.scheduleSending() // so the ClientHello actually gets sent
+ 	}
+ 
++	// 路径接入在同一主循环内使用相同密钥和包号；通过前不启动普通发送。
++	if c.externalPath != nil {
++		if err := c.verifyExternalPath(); err != nil {
++			c.destroyImpl(err)
++		}
++	}
+ 	var sendQueueAvailable <-chan struct{}
  
  runLoop:
  	for {
@@ -19,7 +31,7 @@
  		if c.framer.QueuedTooManyControlFrames() {
  			c.setCloseError(&closeError{err: &qerr.TransportError{ErrorCode: InternalError}})
  			break runLoop
-@@ -1071,6 +1076,13 @@
+@@ -1071,6 +1084,13 @@
  }
  
  func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.DatagramPayloadChecksum) (wasProcessed bool, _ error) {
@@ -33,7 +45,24 @@
  	c.sentPacketHandler.ReceivedBytes(rp.Size(), rp.rcvTime)
  
  	if wire.IsVersionNegotiationPacket(rp.data) {
-@@ -2136,6 +2148,9 @@
+@@ -2082,12 +2102,15 @@
+ }
+ 
+ func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame) {
+-	if c.perspective == protocol.PerspectiveClient {
++	if c.externalPath != nil || c.perspective == protocol.PerspectiveClient {
+ 		c.queueControlFrame(&wire.PathResponseFrame{Data: f.Data})
+ 	}
+ }
+ 
+ func (c *Conn) handlePathResponseFrame(f *wire.PathResponseFrame) error {
++	if c.externalPath != nil {
++		return nil
++	} // 接入后的重复路径响应不触发迁移。
+ 	switch c.perspective {
+ 	case protocol.PerspectiveClient:
+ 		return c.handlePathResponseFrameClient(f)
+@@ -2136,6 +2159,9 @@
  }
  
  func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
@@ -43,7 +72,7 @@
  	if c.perspective == protocol.PerspectiveServer {
  		return &qerr.TransportError{
  			ErrorCode:    qerr.ProtocolViolation,
-@@ -2159,7 +2174,7 @@
+@@ -2159,7 +2185,7 @@
  	// On the client side: If the packet acknowledged a 1-RTT packet, this confirms the handshake.
  	// This is only possible if the ACK was sent in a 1-RTT packet.
  	// This is an optimization over simply waiting for a HANDSHAKE_DONE frame, see section 4.1.2 of RFC 9001.
@@ -52,9 +81,19 @@
  		if err := c.handleHandshakeConfirmed(rcvTime); err != nil {
  			return err
  		}
+@@ -2227,6 +2253,9 @@
+ }
+ 
+ func (c *Conn) handleCloseError(closeErr *closeError) {
++	if c.externalPath != nil && !c.externalPath.verified {
++		closeErr.immediate = true
++	}
+ 	if closeErr.immediate {
+ 		if nerr, ok := closeErr.err.(net.Error); ok && nerr.Timeout() {
+ 			c.logger.Errorf("Destroying connection: %s", closeErr.err)
 --- a/transport.go
 +++ b/transport.go
-@@ -164,10 +164,11 @@
+@@ -164,10 +164,12 @@
  	closeQueue          chan closePacket
  	statelessResetQueue chan receivedPacket
  
@@ -65,11 +104,40 @@
 +	listening        chan struct{} // is closed when listen returns
 +	closeErr         error
 +	createdConn      bool
-+	externalImported bool // 外部测试入口禁止复用 Transport 导入密钥。
++	externalImported bool
++	externalListener bool // 外部测试入口禁止复用 Transport 导入密钥。
 +	isSingleUse      bool // was created for a single server or client, i.e. by calling quic.Listen or quic.Dial
  
  	readingNonQUICPackets atomic.Bool
  	nonQUICPackets        chan receivedPacket
+@@ -829,6 +831,11 @@
+ // * remote close: absorb delayed packets
+ // * local close: retransmit the CONNECTION_CLOSE packet, in case it was lost
+ func (h *packetHandlerMap) ReplaceWithClosed(ids []protocol.ConnectionID, connClosePacket []byte, expiry time.Duration) {
++	h.replaceWithClosed(ids, connClosePacket, expiry, nil, packetInfo{})
++}
++
++// replaceWithClosed 为外部连接保留已验证来源和本地地址；普通 QUIC 调用保持原行为。
++func (h *packetHandlerMap) replaceWithClosed(ids []protocol.ConnectionID, connClosePacket []byte, expiry time.Duration, peer net.Addr, info packetInfo) {
+ 	var handler packetHandler
+ 	if connClosePacket != nil {
+ 		handler = newClosedLocalConn(
+@@ -845,6 +852,15 @@
+ 	} else {
+ 		handler = newClosedRemoteConn()
+ 	}
++	if peer != nil && connClosePacket != nil {
++		if address, ok := externalUDPAddress(peer); ok {
++			local := handler.(*closedLocalConn)
++			local.allowedPeer, local.info = address, info
++		} else {
++			// 无有效绑定来源时仅吸收延迟包，不能允许任意来源触发回复。
++			handler = newClosedRemoteConn()
++		}
++	}
+ 
+ 	h.mutex.Lock()
+ 	for _, id := range ids {
 --- a/sys_conn_windows_test.go
 +++ b/sys_conn_windows_test.go
 @@ -13,7 +13,7 @@
@@ -92,7 +160,7 @@
  		require.False(t, conn.capabilities().DF)
 --- /dev/null
 +++ b/external_kex.go
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,267 @@
 +package quic
 +
 +import (
@@ -101,6 +169,7 @@
 +	"crypto/fips140"
 +	"errors"
 +	"net"
++	"time"
 +
 +	"github.com/apernet/quic-go/internal/ackhandler"
 +	"github.com/apernet/quic-go/internal/handshake"
@@ -182,12 +251,19 @@
 +// NewExternalLoopback 只创建外部密钥数据面；TLS.ConnectionState 保持未握手状态。
 +// 该入口每个 Transport 只能使用一次，失败后也必须关闭并创建新的 Transport。
 +func (t *Transport) NewExternalLoopback(ctx context.Context, remote net.Addr, config *Config, x ExternalLoopbackConfig) (*Conn, error) {
++	if t.Conn == nil || !externalLoopbackAddress(t.Conn.LocalAddr()) || !externalLoopbackAddress(remote) {
++		return nil, errors.New("external QUIC: loopback addresses required")
++	}
++	return t.newExternal(ctx, remote, config, x, nil)
++}
++
++func (t *Transport) newExternal(ctx context.Context, remote net.Addr, config *Config, x ExternalLoopbackConfig, path *externalPathState) (*Conn, error) {
 +	if err := ctx.Err(); err != nil {
 +		return nil, err
 +	}
 +	defer clear(x.ReadSecret[:])
 +	defer clear(x.WriteSecret[:])
-+	if t.Conn == nil || !externalLoopbackAddress(t.Conn.LocalAddr()) || !externalLoopbackAddress(remote) || x.LocalCID == [16]byte{} || x.PeerCID == [16]byte{} || x.LocalCID == x.PeerCID || x.ReadSecret == [32]byte{} || x.WriteSecret == [32]byte{} || x.ReadSecret == x.WriteSecret || fips140.Enabled() {
++	if t.Conn == nil || x.LocalCID == [16]byte{} || x.PeerCID == [16]byte{} || x.LocalCID == x.PeerCID || x.ReadSecret == [32]byte{} || x.WriteSecret == [32]byte{} || x.ReadSecret == x.WriteSecret || fips140.Enabled() {
 +		return nil, errors.New("external QUIC: loopback addresses and distinct keys required")
 +	}
 +	if len(x.PeerParameters) == 0 || len(x.PeerParameters) > 4096 {
@@ -211,11 +287,18 @@
 +		return nil, errors.New("external QUIC: parameter binding mismatch")
 +	}
 +	t.mutex.Lock()
-+	if t.closeErr != nil || t.externalImported || t.server != nil || t.conn != nil || t.ConnectionIDGenerator != nil || (t.ConnectionIDLength != 0 && t.ConnectionIDLength != 16) || t.Tracer != nil {
++	if t.closeErr != nil || (t.externalImported && !(path != nil && x.Server && t.externalListener)) || t.server != nil || (t.conn != nil && !t.externalListener) || t.ConnectionIDGenerator != nil || (t.ConnectionIDLength != 0 && t.ConnectionIDLength != 16) || t.Tracer != nil {
 +		t.mutex.Unlock()
 +		return nil, errors.New("external QUIC: dedicated fresh transport required")
 +	}
++	if t.handlers != nil {
++		if _, exists := t.handlers[local]; exists {
++			t.mutex.Unlock()
++			return nil, errors.New("external QUIC: CID collision")
++		}
++	}
 +	t.externalImported = true
++	t.externalListener = path != nil && x.Server
 +	t.ConnectionIDLength = 16
 +	if err = t.init(false); err != nil {
 +		t.mutex.Unlock()
@@ -228,13 +311,23 @@
 +	c := &Conn{ctx: ctx, ctxCancel: cancel, conn: newSendConn(t.conn, remote, packetInfo{}, utils.DefaultLogger), config: cfg,
 +		origDestConnID: peer, handshakeDestConnID: peer, srcConnIDLen: 16, oneRTTStream: newCryptoStream(), perspective: perspective,
 +		logID: local.String(), logger: utils.DefaultLogger, version: protocol.Version1, versionNegotiated: true,
-+		externalConfirm:   make(chan chan error, 1),
-+		externalConfirmed: make(chan struct{}),
++		externalConfirm:            make(chan chan error, 1),
++		externalAllowPeerKeyUpdate: make(chan externalKeyUpdateRequest, 1),
++		externalConfirmed:          make(chan struct{}),
++		externalPath:               path,
 +	}
 +	runner := (*packetHandlerMap)(t)
 +	c.connIDManager = newConnIDManager(peer, func(token protocol.StatelessResetToken) { runner.AddResetToken(token, c) }, runner.RemoveResetToken, c.queueControlFrame)
 +	c.connIDGenerator = newConnIDGenerator(runner, local, nil, t.statelessResetter, connRunnerCallbacks{
-+		AddConnectionID: func(id protocol.ConnectionID) { runner.Add(id, c) }, RemoveConnectionID: runner.Remove, ReplaceWithClosed: runner.ReplaceWithClosed,
++		AddConnectionID: func(id protocol.ConnectionID) { runner.Add(id, c) }, RemoveConnectionID: runner.Remove,
++		// 关闭后的回复仍绑定已验证路径，不能退回普通关闭处理器的任意来源回复。
++		ReplaceWithClosed: func(ids []protocol.ConnectionID, packet []byte, expiry time.Duration) {
++			var info packetInfo
++			if path != nil {
++				info = path.info
++			}
++			runner.replaceWithClosed(ids, packet, expiry, c.RemoteAddr(), info)
++		},
 +	}, c.queueControlFrame, t.connIDGenerator)
 +	c.preSetup()
 +	c.sentPacketHandler = ackhandler.NewSentPacketHandler(0, protocol.ByteCount(cfg.InitialPacketSize), c.rttStats, &c.connStats, true, c.conn.capabilities().ECN, c.receivedPacketHandler.IgnorePacketsBelow, perspective, false, nil, c.logger)
@@ -260,6 +353,15 @@
 +	go func() {
 +		select {
 +		case <-parent.Done():
++			if path != nil {
++				select {
++				case <-path.ready:
++					// 已验证路径可发送受保护关闭，让客户端立即感知撤销；待接入路径保持静默关闭。
++					c.CloseWithError(0x100, "external authorization ended")
++					return
++				default:
++				}
++			}
 +			c.destroy(context.Cause(parent))
 +		case <-c.ctx.Done():
 +		}
@@ -272,7 +374,7 @@
 +	if err := ctx.Err(); err != nil {
 +		return err
 +	}
-+	if c.externalConfirm == nil {
++	if c.externalConfirm == nil || c.externalPath != nil {
 +		return errors.New("external QUIC: not an external loopback connection")
 +	}
 +	response := make(chan error, 1)
@@ -296,10 +398,27 @@
 +
 +// 外部模式没有普通 TLS 握手完成事件，不发送 NEW_TOKEN、ticket 或 HANDSHAKE_DONE。
 +func (c *Conn) processExternalConfirmation() {
++	// 许可事件由连接主循环处理，和解密、密钥更新共享同一执行顺序。
++	select {
++	case request := <-c.externalAllowPeerKeyUpdate:
++		err := request.ctx.Err()
++		if err == nil {
++			if c.externalPath == nil || !c.externalPath.verified {
++				err = errors.New("external QUIC: path unverified")
++			} else {
++				c.cryptoStreamHandler.(*handshake.ExternalCryptoSetup).AllowPeerKeyUpdate()
++			}
++		}
++		request.result <- err
++	default:
++	}
++
 +	select {
 +	case result := <-c.externalConfirm:
 +		var err error
-+		if !c.handshakeConfirmed {
++		if c.externalPath != nil && !c.externalPath.verified {
++			err = errors.New("external QUIC: path unverified")
++		} else if !c.handshakeConfirmed {
 +			err = c.handleHandshakeConfirmed(monotime.Now())
 +			if err == nil {
 +				close(c.externalConfirmed)
@@ -566,7 +685,7 @@
 +}
 --- /dev/null
 +++ b/internal/handshake/external_kex.go
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,77 @@
 +package handshake
 +
 +import (
@@ -581,8 +700,9 @@
 +
 +// ExternalCryptoSetup 只提供外部握手的数据面密钥，不生成任何 TLS 握手消息。
 +type ExternalCryptoSetup struct {
-+	aead      *updatableAEAD
-+	confirmed bool
++	aead                 *updatableAEAD
++	confirmed            bool
++	peerKeyUpdateAllowed bool
 +}
 +
 +var _ CryptoSetup = (*ExternalCryptoSetup)(nil)
@@ -610,6 +730,10 @@
 +	return c.aead.SetLargestAcked(pn)
 +}
 +func (*ExternalCryptoSetup) DiscardInitialKeys() {}
++
++// AllowPeerKeyUpdate 仅开放对端更新的解密，不允许本端主动更新或提前确认业务。
++func (c *ExternalCryptoSetup) AllowPeerKeyUpdate() { c.peerKeyUpdateAllowed = true }
++
 +func (c *ExternalCryptoSetup) SetHandshakeConfirmed() {
 +	c.confirmed = true
 +	c.aead.SetHandshakeConfirmed()
@@ -634,14 +758,14 @@
 +	return c.aead.DecodePacketNumber(pn, n)
 +}
 +func (c *ExternalCryptoSetup) Open(dst, src []byte, now monotime.Time, pn protocol.PacketNumber, phase protocol.KeyPhaseBit, ad []byte) ([]byte, error) {
-+	if !c.confirmed && phase != protocol.KeyPhaseZero {
++	if !c.confirmed && !c.peerKeyUpdateAllowed && phase != protocol.KeyPhaseZero {
 +		return nil, ErrDecryptionFailed
 +	}
 +	return c.aead.Open(dst, src, now, pn, phase, ad)
 +}
 --- /dev/null
 +++ b/internal/handshake/external_kex_test.go
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,140 @@
 +package handshake
 +
 +import (
@@ -720,4 +844,787 @@
 +	sealer, err := c.Get1RTTSealer()
 +	require.NoError(t, err)
 +	require.NotEmpty(t, sealer.Seal(nil, bytes.Repeat([]byte{1}, 16), 0, nil))
++}
++
++// 复现接入阶段重复解密达到首次更新阈值，再以新阶段发送 START。
++func TestExternalCryptoReadyAllowsPeerUpdateWithoutConfirmation(t *testing.T) {
++	client := NewExternalCryptoSetup([32]byte{2}, [32]byte{1}, utils.NewRTTStats())
++	server := NewExternalCryptoSetup([32]byte{1}, [32]byte{2}, utils.NewRTTStats())
++	ad := []byte("authenticated header")
++	probe := client.aead.Seal(nil, []byte("PATH_CHALLENGE"), 0, ad)
++	ready := server.aead.Seal(nil, []byte("READY"), 0, ad)
++	for range 100 {
++		_, err := server.Open(nil, probe, monotime.Now(), 0, protocol.KeyPhaseZero, ad)
++		require.NoError(t, err)
++		_, err = client.Open(nil, ready, monotime.Now(), 0, protocol.KeyPhaseZero, ad)
++		require.NoError(t, err)
++	}
++	require.EqualValues(t, 100, server.aead.numRcvdWithCurrentKey)
++	require.Equal(t, protocol.KeyPhaseZero, server.aead.KeyPhase())
++	// READY 许可本身不确认握手，达到阈值也不能主动更新。
++	client.AllowPeerKeyUpdate()
++	client.AllowPeerKeyUpdate()
++	require.False(t, client.confirmed)
++	require.False(t, client.aead.handshakeConfirmed)
++	require.Equal(t, protocol.KeyPhaseZero, client.aead.KeyPhase())
++	server.SetHandshakeConfirmed()
++	require.Equal(t, protocol.KeyPhaseOne, server.aead.KeyPhase())
++	start := server.aead.Seal(nil, []byte("START"), 1, ad)
++	plain, err := client.Open(nil, start, monotime.Now(), 1, protocol.KeyPhaseOne, ad)
++	require.NoError(t, err)
++	require.Equal(t, []byte("START"), plain)
++	require.False(t, client.confirmed)
++	require.False(t, client.aead.handshakeConfirmed)
++	require.Equal(t, protocol.KeyPhaseOne, client.aead.KeyPhase())
++	// 跟随对端更新后，也不能在业务确认之前自行滚动下一阶段。
++	_ = client.aead.Seal(nil, []byte("ack"), 1, ad)
++	peerAck := server.aead.Seal(nil, []byte("peer ack"), 2, ad)
++	_, err = client.Open(nil, peerAck, monotime.Now(), 2, protocol.KeyPhaseOne, ad)
++	require.NoError(t, err)
++	require.NoError(t, client.SetLargest1RTTAcked(1))
++	client.aead.numSentWithCurrentKey = keyUpdateInterval.Load()
++	require.Equal(t, protocol.KeyPhaseOne, client.aead.KeyPhase())
++	client.SetHandshakeConfirmed()
++	require.True(t, client.confirmed)
++	require.Equal(t, protocol.KeyPhaseZero, client.aead.KeyPhase())
++}
++
++// 待接入连接仍拒绝真实 phase 1，即使该包能通过下一阶段 AEAD。
++func TestExternalCryptoRejectsEarlyPeerUpdate(t *testing.T) {
++	client := NewExternalCryptoSetup([32]byte{2}, [32]byte{1}, utils.NewRTTStats())
++	server := NewExternalCryptoSetup([32]byte{1}, [32]byte{2}, utils.NewRTTStats())
++	server.SetHandshakeConfirmed()
++	for pn := protocol.PacketNumber(0); pn < 100; pn++ {
++		server.aead.Seal(nil, []byte("probe"), pn, nil)
++	}
++	require.Equal(t, protocol.KeyPhaseOne, server.aead.KeyPhase())
++	packet := server.aead.Seal(nil, []byte("early"), 100, nil)
++	_, err := client.Open(nil, packet, monotime.Now(), 100, protocol.KeyPhaseOne, nil)
++	require.ErrorIs(t, err, ErrDecryptionFailed)
++	require.Equal(t, protocol.KeyPhaseZero, client.aead.KeyPhase())
++	client.AllowPeerKeyUpdate()
++	_, err = client.Open(nil, packet, monotime.Now(), 100, protocol.KeyPhaseOne, nil)
++	require.NoError(t, err)
++}
+--- /dev/null
++++ b/external_path.go
+@@ -0,0 +1,384 @@
++package quic
++
++import (
++	"context"
++	"crypto/rand"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"time"
++
++	"github.com/apernet/quic-go/internal/handshake"
++	"github.com/apernet/quic-go/internal/monotime"
++	"github.com/apernet/quic-go/internal/protocol"
++	"github.com/apernet/quic-go/internal/wire"
++)
++
++// ExternalPathHooks 由同进程接入管理器提供，回调必须有界且不得重入此连接。
++// 所有回调在连接主循环中执行；只有通过 AEAD 的实际数据报才增加预算。
++type ExternalPathHooks struct {
++	Authenticated func(netip.AddrPort, int) error
++	Challenge     func(netip.AddrPort) ([8]byte, error)
++	ReserveSend   func(netip.AddrPort, int) error
++	Validated     func(netip.AddrPort, [8]byte) error
++}
++
++type externalCandidate struct {
++	challenge   [8]byte
++	response    [8]byte
++	hasResponse bool
++	info        packetInfo // 仅从通过 AEAD 的实际收包中保存本地目的地址与接口。
++}
++type externalPathState struct {
++	server     bool
++	deadline   time.Time
++	hooks      *ExternalPathHooks
++	candidates map[netip.AddrPort]*externalCandidate
++	ready      chan struct{}
++	verified   bool
++	info       packetInfo // 胜出路径的本地地址信息，也用于关闭后的受限回复。
++}
++
++// RegisterExternal 创建并登记预分配 CID；服务器 remote 必须为 nil，不能预信任 HTTP 来源。
++// 返回不代表可用；调用者须 AwaitExternalPath，再执行可靠业务 READY 协议。
++func (t *Transport) RegisterExternal(ctx context.Context, remote net.Addr, config *Config, x ExternalLoopbackConfig, deadline time.Time, hooks *ExternalPathHooks) (*Conn, error) {
++	if deadline.IsZero() || !time.Now().Before(deadline) || time.Until(deadline) > 10*time.Second || t.Conn == nil {
++		return nil, errors.New("external QUIC: invalid path deadline")
++	}
++	path := &externalPathState{server: x.Server, deadline: deadline, candidates: make(map[netip.AddrPort]*externalCandidate), ready: make(chan struct{})}
++	if x.Server {
++		if remote != nil || hooks == nil || hooks.Authenticated == nil || hooks.Challenge == nil || hooks.ReserveSend == nil || hooks.Validated == nil {
++			return nil, errors.New("external QUIC: server admission hooks required")
++		}
++		copyHooks := *hooks
++		path.hooks = &copyHooks
++		// 未验证时不使用占位地址发送任何包；只有 PATH_RESPONSE 验证成功才替换目的地。
++		remote = &net.UDPAddr{IP: net.IPv4zero, Port: 1}
++	} else {
++		address, ok := externalUDPAddress(remote)
++		if !ok || hooks != nil {
++			return nil, errors.New("external QUIC: invalid client peer")
++		}
++		candidate := &externalCandidate{}
++		if _, err := rand.Read(candidate.challenge[:]); err != nil {
++			return nil, err
++		}
++		path.candidates[address] = candidate
++	}
++	return t.newExternal(ctx, remote, config, x, path)
++}
++
++func externalUDPAddress(addr net.Addr) (netip.AddrPort, bool) {
++	a, ok := addr.(*net.UDPAddr)
++	if !ok || a == nil || a.Port < 1 || a.Port > 65535 || a.Zone != "" {
++		return netip.AddrPort{}, false
++	}
++	ip, ok := netip.AddrFromSlice(a.IP)
++	if !ok {
++		return netip.AddrPort{}, false
++	}
++	ip = ip.Unmap()
++	return netip.AddrPortFrom(ip, uint16(a.Port)), !ip.IsUnspecified() && !ip.IsMulticast()
++}
++
++func (c *Conn) AwaitExternalPath(ctx context.Context) error {
++	if c.externalPath == nil {
++		return errors.New("external QUIC: no path verification")
++	}
++	select {
++	case <-ctx.Done():
++		return context.Cause(ctx)
++	case <-c.ctx.Done():
++		return context.Cause(c.ctx)
++	case <-c.externalPath.ready:
++		if c.ctx.Err() != nil {
++			return context.Cause(c.ctx)
++		}
++		return nil
++	}
++}
++
++type externalKeyUpdateRequest struct {
++	ctx    context.Context
++	result chan error
++}
++
++// AllowExternalPeerKeyUpdate 在认证 READY 后、发送 READY_ACK 前调用。
++// 仅允许解密对端更新；不确认握手、不开放业务，也不允许主动 key update。
++// 调用成功后许可保持至连接关闭，重复调用幂等；待路径验证阶段不能提前开放。
++func (c *Conn) AllowExternalPeerKeyUpdate(ctx context.Context) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	if err := c.AwaitExternalPath(ctx); err != nil {
++		return err
++	}
++	request := externalKeyUpdateRequest{ctx: ctx, result: make(chan error, 1)}
++	select {
++	case c.externalAllowPeerKeyUpdate <- request:
++		c.scheduleSending()
++	case <-ctx.Done():
++		return context.Cause(ctx)
++	case <-c.ctx.Done():
++		return context.Cause(c.ctx)
++	}
++	select {
++	case err := <-request.result:
++		return err
++	case <-ctx.Done():
++		return context.Cause(ctx)
++	case <-c.ctx.Done():
++		return context.Cause(c.ctx)
++	}
++}
++
++// ConfirmExternal 由可靠 READY 控制协议调用；不能用路径成功或任意 ACK 代替业务确认。
++func (c *Conn) ConfirmExternal(ctx context.Context) error {
++	if c.externalPath == nil {
++		return errors.New("external QUIC: no network path")
++	}
++	if err := c.AwaitExternalPath(ctx); err != nil {
++		return err
++	}
++	response := make(chan error, 1)
++	select {
++	case c.externalConfirm <- response:
++		c.scheduleSending()
++	case <-ctx.Done():
++		return context.Cause(ctx)
++	case <-c.ctx.Done():
++		return context.Cause(c.ctx)
++	}
++	select {
++	case err := <-response:
++		return err
++	case <-ctx.Done():
++		return context.Cause(ctx)
++	case <-c.ctx.Done():
++		return context.Cause(c.ctx)
++	}
++}
++
++// verifyExternalPath 在普通发送循环之前运行：只发 1200 字节探测，每 250ms 最多每路径一包。
++// 服务器每次发送都预扣该实际来源的预算；未知 CID 由 Transport 丢弃，不会到达这里。
++func (c *Conn) verifyExternalPath() error {
++	state := c.externalPath
++	timer := time.NewTimer(time.Until(state.deadline))
++	defer timer.Stop()
++	tick := time.NewTicker(250 * time.Millisecond)
++	defer tick.Stop()
++	send := func() error {
++		for address, candidate := range state.candidates {
++			if err := c.sendExternalProbe(address, candidate); err != nil {
++				return err
++			}
++		}
++		return nil
++	}
++	if err := send(); err != nil {
++		return err
++	}
++	for {
++		if !time.Now().Before(state.deadline) {
++			return errors.New("external QUIC: path deadline exceeded")
++		}
++		// 每批有限处理，避免持续伪造流量饿死截止时间与取消信号。
++		for range 32 {
++			c.receivedPacketMx.Lock()
++			if c.receivedPackets.Empty() {
++				c.receivedPacketMx.Unlock()
++				break
++			}
++			packet := c.receivedPackets.PopFront()
++			c.receivedPacketMx.Unlock()
++			verified, err := c.handleExternalProbe(packet)
++			packet.buffer.Decrement()
++			packet.buffer.MaybeRelease()
++			if err != nil {
++				return err
++			}
++			if verified {
++				state.verified = true
++				clear(state.candidates)
++				c.lastPacketReceivedTime = monotime.Now()
++				close(state.ready)
++				return nil
++			}
++		}
++		select {
++		case <-c.closeChan:
++			return errors.New("external QUIC: path canceled")
++		case <-timer.C:
++			return errors.New("external QUIC: path deadline exceeded")
++		case <-tick.C:
++			if err := send(); err != nil {
++				return err
++			}
++		case <-c.notifyReceivedPacket:
++		}
++	}
++}
++
++// 先完成 AEAD，再按数据报来源处理路径帧。接入前丢弃业务帧且不 ACK，防止业务数据被吞掉。
++func (c *Conn) handleExternalProbe(packet receivedPacket) (bool, error) {
++	state := c.externalPath
++	address, valid := externalUDPAddress(packet.remoteAddr)
++	if !valid || len(packet.data) < 37 || packet.data[0]&0xc0 != 0x40 {
++		return false, nil
++	}
++	candidate := state.candidates[address]
++	if !state.server && candidate == nil {
++		return false, nil
++	}
++	size := len(packet.data)
++	pn, _, _, payload, err := c.unpacker.UnpackShortHeader(packet.rcvTime, packet.data)
++	if err != nil {
++		return false, nil
++	}
++	if c.receivedPacketHandler.IsPotentiallyDuplicate(pn, protocol.Encryption1RTT) {
++		return false, nil
++	}
++	if state.server {
++		if err := state.hooks.Authenticated(address, size); err != nil {
++			return false, nil
++		}
++		if candidate == nil {
++			if len(state.candidates) >= 2 {
++				return false, nil
++			}
++			challenge, err := state.hooks.Challenge(address)
++			if err != nil {
++				return false, err
++			}
++			candidate = &externalCandidate{challenge: challenge}
++			state.candidates[address] = candidate
++		}
++	}
++	candidate.info = packet.info
++	challenge, response, pureProbe, err := parseExternalProbe(payload, &c.frameParser, c.version)
++	if err != nil {
++		return false, nil
++	}
++	if challenge != nil {
++		candidate.response = *challenge
++		candidate.hasResponse = true
++	}
++	matched := response != nil && *response == candidate.challenge && candidate.hasResponse
++	if matched && state.server {
++		if err := state.hooks.Validated(address, *response); err != nil {
++			return false, err
++		}
++	}
++	// 客户端确认服务端回程后仍需发回服务端挑战，丢包由服务端探测重传恢复。
++	if matched && !state.server {
++		if err := c.sendExternalProbe(address, candidate); err != nil {
++			return false, err
++		}
++	}
++	if matched {
++		state.info = candidate.info
++		c.conn.ChangeRemoteAddr(net.UDPAddrFromAddrPort(address), candidate.info)
++		// 匹配路径后，这个报文中的其余帧才允许交给普通 QUIC 状态机。
++		_, _, err := c.handleUnpackedShortHeaderPacket(protocol.ParseConnectionID(packet.data[1:17]), pn, payload, protocol.ECNNon, packet.rcvTime, nil)
++		return err == nil, err
++	}
++	if pureProbe {
++		c.largestRcvdAppData = max(c.largestRcvdAppData, pn)
++		if err := c.receivedPacketHandler.ReceivedPacket(pn, protocol.ECNNon, protocol.Encryption1RTT, packet.rcvTime, false); err != nil {
++			return false, err
++		}
++	}
++	// 没收到己方挑战的有效回包时，禁止把新来源设为常规发送目的地。
++	return false, nil
++}
++
++func parseExternalProbe(data []byte, parser *wire.FrameParser, version protocol.Version) (challenge, response *[8]byte, pure bool, err error) {
++	pure = true
++	for len(data) > 0 {
++		kind, n, e := parser.ParseType(data, protocol.Encryption1RTT)
++		if e == io.EOF {
++			return
++		}
++		if e != nil {
++			err = e
++			return
++		}
++		data = data[n:]
++		if kind.IsStreamFrameType() {
++			frame, n, e := parser.ParseStreamFrame(kind, data, version)
++			if e != nil {
++				err = e
++				return
++			}
++			frame.PutBack()
++			data = data[n:]
++			pure = false
++		} else if kind.IsAckFrameType() {
++			_, n, e := parser.ParseAckFrame(kind, data, protocol.Encryption1RTT, version)
++			if e != nil {
++				err = e
++				return
++			}
++			data = data[n:]
++		} else if kind.IsDatagramFrameType() {
++			_, n, e := parser.ParseDatagramFrame(kind, data, version)
++			if e != nil {
++				err = e
++				return
++			}
++			data = data[n:]
++			pure = false
++		} else {
++			frame, n, e := parser.ParseLessCommonFrame(kind, data, version)
++			if e != nil {
++				err = e
++				return
++			}
++			data = data[n:]
++			switch frame := frame.(type) {
++			case *wire.PathChallengeFrame:
++				v := frame.Data
++				challenge = &v
++			case *wire.PathResponseFrame:
++				v := frame.Data
++				response = &v
++			case *wire.PingFrame:
++			default:
++				pure = false
++			}
++		}
++	}
++	return
++}
++
++func (c *Conn) sendExternalProbe(address netip.AddrPort, candidate *externalCandidate) error {
++	state := c.externalPath
++	const size = 1200
++	if state.server {
++		// 预算不足只等待新的合法输入；不通过发送 CLOSE 或 ACK 绕过限制。
++		if err := state.hooks.ReserveSend(address, size); err != nil {
++			return nil
++		}
++	}
++	sealer, err := c.cryptoStreamHandler.(*handshake.ExternalCryptoSetup).Get1RTTSealer()
++	if err != nil {
++		return err
++	}
++	pn := c.sentPacketHandler.PopPacketNumber(protocol.Encryption1RTT)
++	header, err := wire.AppendShortHeader(nil, c.handshakeDestConnID, pn, protocol.PacketNumberLen4, protocol.KeyPhaseZero)
++	if err != nil {
++		return err
++	}
++	payload, _ := (&wire.PathChallengeFrame{Data: candidate.challenge}).Append(nil, c.version)
++	if candidate.hasResponse {
++		payload, _ = (&wire.PathResponseFrame{Data: candidate.response}).Append(payload, c.version)
++	}
++	payload = append(payload, make([]byte, size-len(header)-sealer.Overhead()-len(payload))...)
++	packet := sealer.Seal(header, payload, pn, header)
++	sealer.EncryptHeader(packet[len(header):len(header)+16], &packet[0], packet[len(header)-4:len(header)])
++	// 探测自行定时重发，不加入业务重传队列；仍登记所有已发包号，后续 ACK 不会被视为确认未发送包。
++	c.sentPacketHandler.SentPacket(monotime.Now(), pn, protocol.InvalidPacketNumber, nil, nil, protocol.Encryption1RTT, protocol.ECNNon, size, false, false)
++	c.sentFirstPacket = true
++	return c.conn.WriteTo(packet, net.UDPAddrFromAddrPort(address), candidate.info)
++}
+--- a/closed_conn.go
++++ b/closed_conn.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"math/bits"
+ 	"net"
++	"net/netip"
+ 	"sync/atomic"
+ 
+ 	"github.com/apernet/quic-go/internal/utils"
+@@ -15,7 +16,9 @@
+ 	counter atomic.Uint32
+ 	logger  utils.Logger
+ 
+-	sendPacket func(net.Addr, packetInfo)
++	sendPacket  func(net.Addr, packetInfo)
++	allowedPeer netip.AddrPort
++	info        packetInfo
+ }
+ 
+ var _ packetHandler = &closedLocalConn{}
+@@ -29,6 +32,15 @@
+ }
+ 
+ func (c *closedLocalConn) handlePacket(p receivedPacket) {
++	// 异源包既不触发回复，也不消耗合法来源的指数退避计数。
++	if c.allowedPeer.IsValid() {
++		address, ok := externalUDPAddress(p.remoteAddr)
++		if !ok || address != c.allowedPeer {
++			return
++		}
++		p.remoteAddr = net.UDPAddrFromAddrPort(c.allowedPeer)
++		p.info = c.info
++	}
+ 	n := c.counter.Add(1)
+ 	// exponential backoff
+ 	// only send a CONNECTION_CLOSE for the 1st, 2nd, 4th, 8th, 16th, ... packet arriving
+--- a/closed_conn_test.go
++++ b/closed_conn_test.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"net"
++	"net/netip"
+ 	"testing"
+ 
+ 	"github.com/apernet/quic-go/internal/utils"
+@@ -32,3 +33,27 @@
+ 		}
+ 	}
+ }
++
++// 同源保留 CLOSE 重传，异源不回复且不能消耗退避计数；回复使用验证时的本地地址。
++func TestClosedLocalConnectionRestrictedPeer(t *testing.T) {
++	expected := netip.MustParseAddrPort("192.0.2.1:1234")
++	info := packetInfo{addr: netip.MustParseAddr("198.51.100.2")}
++	var writes int
++	conn := newClosedLocalConn(func(addr net.Addr, got packetInfo) {
++		writes++
++		require.Equal(t, net.UDPAddrFromAddrPort(expected), addr)
++		require.Equal(t, info, got)
++	}, utils.DefaultLogger).(*closedLocalConn)
++	conn.allowedPeer, conn.info = expected, info
++	for _, addr := range []net.Addr{nil, net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:5678")), net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.2:1234"))} {
++		for range 8 {
++			conn.handlePacket(receivedPacket{remoteAddr: addr})
++		}
++	}
++	require.Zero(t, writes)
++	require.Zero(t, conn.counter.Load())
++	for range 2 {
++		conn.handlePacket(receivedPacket{remoteAddr: net.UDPAddrFromAddrPort(expected), info: packetInfo{addr: netip.MustParseAddr("198.51.100.99")}})
++	}
++	require.Equal(t, 2, writes)
++}
+--- /dev/null
++++ b/external_path_test.go
+@@ -0,0 +1,257 @@
++package quic
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"testing"
++	"time"
++
++	"github.com/apernet/quic-go/internal/handshake"
++	"github.com/apernet/quic-go/internal/monotime"
++	"github.com/apernet/quic-go/internal/protocol"
++	"github.com/apernet/quic-go/internal/utils"
++	"github.com/apernet/quic-go/internal/wire"
++	"github.com/stretchr/testify/require"
++	"go.uber.org/mock/gomock"
++)
++
++// 网络测试直接导入临时密钥，预算仍按实际经过 AEAD 的路径回调计算。
++func externalNetworkTestPair(t *testing.T) (*Conn, *Conn, *externalTestPacketConn, *externalTestPacketConn) {
++	t.Helper()
++	cs, ss := externalTestSocket(t), externalTestSocket(t)
++	ct, st := &Transport{Conn: cs, DisableGSO: true}, &Transport{Conn: ss, DisableGSO: true}
++	t.Cleanup(func() { ct.Close(); st.Close() })
++	cfg := externalTestConfig()
++	clientCID, serverCID := [16]byte{1}, [16]byte{2}
++	cp, err := ExternalLoopbackParameters(false, clientCID, serverCID, cfg)
++	require.NoError(t, err)
++	sp, err := ExternalLoopbackParameters(true, serverCID, clientCID, cfg)
++	require.NoError(t, err)
++	received, sent := make(map[netip.AddrPort]int), make(map[netip.AddrPort]int)
++	hooks := &ExternalPathHooks{
++		Authenticated: func(a netip.AddrPort, n int) error { received[a] += n; return nil },
++		Challenge:     func(netip.AddrPort) ([8]byte, error) { return [8]byte{7}, nil },
++		ReserveSend: func(a netip.AddrPort, n int) error {
++			if sent[a]+n > 3*received[a] {
++				return errors.New("budget")
++			}
++			sent[a] += n
++			return nil
++		},
++		Validated: func(_ netip.AddrPort, b [8]byte) error {
++			if b != [8]byte{7} {
++				return errors.New("challenge")
++			}
++			return nil
++		},
++	}
++	server, err := st.RegisterExternal(context.Background(), nil, cfg, ExternalLoopbackConfig{Server: true, LocalCID: serverCID, PeerCID: clientCID, ReadSecret: [32]byte{1}, WriteSecret: [32]byte{2}, PeerParameters: cp}, time.Now().Add(5*time.Second), hooks)
++	require.NoError(t, err)
++	client, err := ct.RegisterExternal(context.Background(), ss.LocalAddr(), cfg, ExternalLoopbackConfig{LocalCID: clientCID, PeerCID: serverCID, ReadSecret: [32]byte{2}, WriteSecret: [32]byte{1}, PeerParameters: sp}, time.Now().Add(5*time.Second), nil)
++	require.NoError(t, err)
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	require.NoError(t, client.AwaitExternalPath(ctx))
++	require.NoError(t, server.AwaitExternalPath(ctx))
++	return client, server, cs, ss
++}
++
++func TestExternalNetworkReadyKeyUpdateAfter100Decryptions(t *testing.T) {
++	client, server, cs, ss := externalNetworkTestPair(t)
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	cs.mu.Lock()
++	probe := bytes.Clone(cs.packets[0])
++	cs.mu.Unlock()
++	// 重复包不会增加路径预算，但在重复 PN 过滤之前确实经过 AEAD。
++	for range 100 {
++		_, err := cs.PacketConn.WriteTo(probe, ss.LocalAddr())
++		require.NoError(t, err)
++		time.Sleep(time.Millisecond)
++	}
++	done := make(chan error, 1)
++	go func() {
++		stream, err := server.AcceptStream(ctx)
++		if err != nil {
++			done <- err
++			return
++		}
++		stream.SetDeadline(time.Now().Add(5 * time.Second))
++		var b [1]byte
++		if _, err = io.ReadFull(stream, b[:]); err != nil {
++			done <- err
++			return
++		}
++		if _, err = stream.Write([]byte("R")); err != nil {
++			done <- err
++			return
++		}
++		if _, err = io.ReadFull(stream, b[:]); err != nil {
++			done <- err
++			return
++		}
++		if err = server.ConfirmExternal(ctx); err != nil {
++			done <- err
++			return
++		}
++		if _, err = stream.Write([]byte("START")); err == nil {
++			err = stream.Close()
++		}
++		done <- err
++	}()
++	stream, err := client.OpenStreamSync(ctx)
++	require.NoError(t, err)
++	require.NoError(t, stream.SetDeadline(time.Now().Add(5*time.Second)))
++	_, err = stream.Write([]byte("H"))
++	require.NoError(t, err)
++	var ready [1]byte
++	_, err = io.ReadFull(stream, ready[:])
++	require.NoError(t, err)
++	require.Equal(t, byte('R'), ready[0])
++	require.NoError(t, client.AllowExternalPeerKeyUpdate(ctx))
++	require.NoError(t, client.AllowExternalPeerKeyUpdate(ctx))
++	select {
++	case <-client.externalConfirmed:
++		t.Fatal("READY 许可提前确认了握手")
++	default:
++	}
++	_, err = stream.Write([]byte("A"))
++	require.NoError(t, err)
++	require.NoError(t, stream.Close())
++	start, err := io.ReadAll(stream)
++	require.NoError(t, err)
++	require.Equal(t, []byte("START"), start)
++	require.NoError(t, <-done)
++	select {
++	case <-client.externalConfirmed:
++		t.Fatal("接收 START 提前确认了业务")
++	default:
++	}
++	require.NoError(t, client.ConfirmExternal(ctx))
++	require.NoError(t, client.SendDatagram([]byte("business")))
++	body, err := server.ReceiveDatagram(ctx)
++	require.NoError(t, err)
++	require.Equal(t, []byte("business"), body)
++	// 检查线上实际包，避免测试只是未触发 key update 的普通往返。
++	observer := handshake.NewExternalCryptoSetup([32]byte{2}, [32]byte{1}, utils.NewRTTStats())
++	observer.AllowPeerKeyUpdate()
++	unpacker := newPacketUnpacker(observer, 16)
++	ss.mu.Lock()
++	packets := make([][]byte, len(ss.packets))
++	for i, b := range ss.packets {
++		packets[i] = bytes.Clone(b)
++	}
++	ss.mu.Unlock()
++	updated := false
++	for _, b := range packets {
++		_, _, phase, _, err := unpacker.UnpackShortHeader(monotime.Now(), b)
++		require.NoError(t, err)
++		updated = updated || phase == protocol.KeyPhaseOne
++	}
++	require.True(t, updated, "必须实际发出 phase 1")
++}
++
++func TestExternalPeerKeyUpdateCancellationAndPathGate(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	c := &Conn{}
++	require.ErrorIs(t, c.AllowExternalPeerKeyUpdate(ctx), context.Canceled)
++	require.Error(t, c.AllowExternalPeerKeyUpdate(context.Background()))
++	c.ctx = context.Background()
++	c.externalPath = &externalPathState{ready: make(chan struct{})}
++	waiting, stop := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer stop()
++	require.ErrorIs(t, c.AllowExternalPeerKeyUpdate(waiting), context.DeadlineExceeded)
++	c.externalAllowPeerKeyUpdate = make(chan externalKeyUpdateRequest, 1)
++	req := externalKeyUpdateRequest{ctx: context.Background(), result: make(chan error, 1)}
++	c.externalAllowPeerKeyUpdate <- req
++	c.processExternalConfirmation()
++	require.Error(t, <-req.result)
++	c.externalPath.verified = true
++	req = externalKeyUpdateRequest{ctx: ctx, result: make(chan error, 1)}
++	c.externalAllowPeerKeyUpdate <- req
++	c.processExternalConfirmation()
++	require.ErrorIs(t, <-req.result, context.Canceled)
++}
++
++// 在真实主循环关闭后向旧 CID 发送异源包，确认 Transport 中的关闭处理器也受到限制。
++func TestExternalNetworkClosedConnectionRejectsForeignSource(t *testing.T) {
++	_, server, _, ss := externalNetworkTestPair(t)
++	require.NoError(t, server.CloseWithError(0x100, "external authorization ended"))
++	foreign := externalTestSocket(t)
++	packet := append([]byte{0x40}, make([]byte, 16)...)
++	packet[1] = 2
++	for range 8 {
++		_, err := foreign.WriteTo(packet, ss.LocalAddr())
++		require.NoError(t, err)
++	}
++	require.NoError(t, foreign.SetReadDeadline(time.Now().Add(80*time.Millisecond)))
++	var buffer [256]byte
++	_, _, err := foreign.ReadFrom(buffer[:])
++	var timeout net.Error
++	require.ErrorAs(t, err, &timeout)
++	require.True(t, timeout.Timeout(), "异源不应收到 CLOSE")
++}
++
++// 生成带真实 AEAD 和头保护的路径帧，不绕过收包鉴权来验证 packetInfo 来源。
++func externalTestProbe(t *testing.T, crypto *handshake.ExternalCryptoSetup, pn protocol.PacketNumber, challenge, response *[8]byte) []byte {
++	t.Helper()
++	sealer, err := crypto.Get1RTTSealer()
++	require.NoError(t, err)
++	header, err := wire.AppendShortHeader(nil, protocol.ParseConnectionID(bytes.Repeat([]byte{2}, 16)), pn, protocol.PacketNumberLen4, protocol.KeyPhaseZero)
++	require.NoError(t, err)
++	var payload []byte
++	if challenge != nil {
++		payload, err = (&wire.PathChallengeFrame{Data: *challenge}).Append(payload, protocol.Version1)
++		require.NoError(t, err)
++	}
++	if response != nil {
++		payload, err = (&wire.PathResponseFrame{Data: *response}).Append(payload, protocol.Version1)
++		require.NoError(t, err)
++	}
++	payload = append(payload, make([]byte, 1200-len(header)-sealer.Overhead()-len(payload))...)
++	packet := sealer.Seal(header, payload, pn, header)
++	sealer.EncryptHeader(packet[len(header):len(header)+16], &packet[0], packet[len(header)-4:len(header)])
++	return packet
++}
++
++func TestExternalProbePreservesAuthenticatedPacketInfo(t *testing.T) {
++	ctrl := gomock.NewController(t)
++	tc := newServerTestConnection(t, ctrl, nil, false)
++	c := tc.conn
++	c.cryptoStreamHandler = handshake.NewExternalCryptoSetup([32]byte{1}, [32]byte{2}, utils.NewRTTStats())
++	c.unpacker = newPacketUnpacker(c.cryptoStreamHandler.(*handshake.ExternalCryptoSetup), 16)
++	c.externalPath = &externalPathState{server: true, candidates: make(map[netip.AddrPort]*externalCandidate), hooks: &ExternalPathHooks{
++		Authenticated: func(netip.AddrPort, int) error { return nil }, Challenge: func(netip.AddrPort) ([8]byte, error) { return [8]byte{7}, nil },
++		ReserveSend: func(netip.AddrPort, int) error { return nil }, Validated: func(netip.AddrPort, [8]byte) error { return nil },
++	}}
++	peer := handshake.NewExternalCryptoSetup([32]byte{2}, [32]byte{1}, utils.NewRTTStats())
++	challenge := [8]byte{9}
++	addresses := []netip.AddrPort{netip.MustParseAddrPort("192.0.2.10:1000"), netip.MustParseAddrPort("192.0.2.20:2000")}
++	infos := []packetInfo{{addr: netip.MustParseAddr("198.51.100.1")}, {addr: netip.MustParseAddr("198.51.100.2")}}
++	for i, a := range addresses {
++		packet := receivedPacket{remoteAddr: net.UDPAddrFromAddrPort(a), rcvTime: monotime.Now(), info: infos[i], data: externalTestProbe(t, peer, protocol.PacketNumber(i), &challenge, nil)}
++		verified, err := c.handleExternalProbe(packet)
++		require.NoError(t, err)
++		require.False(t, verified)
++		require.Equal(t, infos[i], c.externalPath.candidates[a].info)
++		tc.sendConn.EXPECT().WriteTo(gomock.Any(), net.UDPAddrFromAddrPort(a), infos[i]).Return(nil)
++		require.NoError(t, c.sendExternalProbe(a, c.externalPath.candidates[a]))
++	}
++	// 伪造的来源元数据不能覆盖已经通过 AEAD 的候选信息。
++	bad := receivedPacket{remoteAddr: net.UDPAddrFromAddrPort(addresses[0]), info: infos[1], rcvTime: monotime.Now(), data: bytes.Repeat([]byte{0x40}, 1200)}
++	verified, err := c.handleExternalProbe(bad)
++	require.NoError(t, err)
++	require.False(t, verified)
++	require.Equal(t, infos[0], c.externalPath.candidates[addresses[0]].info)
++	response := [8]byte{7}
++	tc.sendConn.EXPECT().ChangeRemoteAddr(net.UDPAddrFromAddrPort(addresses[0]), infos[0])
++	verified, err = c.handleExternalProbe(receivedPacket{remoteAddr: net.UDPAddrFromAddrPort(addresses[0]), info: infos[0], rcvTime: monotime.Now(), data: externalTestProbe(t, peer, 2, &challenge, &response)})
++	require.NoError(t, err)
++	require.True(t, verified)
++	require.Equal(t, infos[0], c.externalPath.info)
 +}

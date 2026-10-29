@@ -47,7 +47,15 @@ func networkFailure(err error) error {
 // NewHTTPHandler 是本地联调/未来受保护上游的处理器，不会自行监听端口。
 // 对外部署必须由具有 TLS、读写时限和连接限额的服务器承载。
 func NewHTTPHandler(b *Broker, accessToken string) (http.Handler, error) {
-	if b == nil || !validToken(accessToken) {
+	if b == nil {
+		return nil, ErrConfig
+	}
+	return NewHTTPExchangeHandler(b.Handle, accessToken)
+}
+
+// NewHTTPExchangeHandler 允许同进程入口在写回响应前原子登记待接入数据面。
+func NewHTTPExchangeHandler(exchange func(context.Context, []byte) ([]byte, error), accessToken string) (http.Handler, error) {
+	if exchange == nil || !validToken(accessToken) {
 		return nil, ErrConfig
 	}
 	expected := sha256.Sum256([]byte("Bearer " + accessToken))
@@ -79,7 +87,7 @@ func NewHTTPHandler(b *Broker, accessToken string) (http.Handler, error) {
 			http.Error(w, "invalid size", http.StatusRequestEntityTooLarge)
 			return
 		}
-		response, err := b.Handle(r.Context(), body)
+		response, err := exchange(r.Context(), body)
 		if err != nil {
 			http.Error(w, "exchange rejected", statusForError(err))
 			return
