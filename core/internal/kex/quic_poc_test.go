@@ -58,23 +58,19 @@ func TestKEXQUICLoopback(t *testing.T) {
 	https.Close()
 	require.NoError(t, err)
 	defer result.Secrets.Clear()
-	broker.mu.Lock()
-	pending := broker.pending[result.SessionID]
-	if pending == nil {
-		broker.mu.Unlock()
-		t.Fatal("pending session missing")
-	}
-	params := bytes.Clone(pending.request.parameters)
-	secrets := pending.secrets
-	expires := pending.expires
-	broker.mu.Unlock()
-	require.True(t, time.Now().Before(expires))
+	lease, err := broker.ClaimPending(context.Background(), result.ServerCID)
+	require.NoError(t, err)
+	defer lease.Close()
+	material, err := lease.TakeMaterial()
+	require.NoError(t, err)
+	defer material.Secrets.Clear()
+	require.True(t, time.Now().Before(material.Deadline))
 	// 两端独立使用各自握手结果，不能用客户端的派生结果冒充服务器结果。
 	clientTransport := &quic.Transport{Conn: clientSocket}
 	defer clientTransport.Close()
 	serverTransport := &quic.Transport{Conn: serverSocket}
 	defer serverTransport.Close()
-	server, err := serverTransport.NewExternalLoopback(context.Background(), clientSocket.LocalAddr(), cfg, quic.ExternalLoopbackConfig{Server: true, LocalCID: result.ServerCID, PeerCID: result.ClientCID, ReadSecret: secrets.ClientSecret(), WriteSecret: secrets.ServerSecret(), PeerParameters: params})
+	server, err := serverTransport.NewExternalLoopback(lease.Context(), clientSocket.LocalAddr(), cfg, quic.ExternalLoopbackConfig{Server: true, LocalCID: result.ServerCID, PeerCID: result.ClientCID, ReadSecret: material.Secrets.ClientSecret(), WriteSecret: material.Secrets.ServerSecret(), PeerParameters: material.PeerParameters})
 	require.NoError(t, err)
 	client, err := clientTransport.NewExternalLoopback(context.Background(), serverSocket.LocalAddr(), cfg, quic.ExternalLoopbackConfig{LocalCID: result.ClientCID, PeerCID: result.ServerCID, ReadSecret: result.Secrets.ServerSecret(), WriteSecret: result.Secrets.ClientSecret(), PeerParameters: result.TransportParameters})
 	require.NoError(t, err)
@@ -116,8 +112,6 @@ func TestKEXQUICLoopback(t *testing.T) {
 	// 本地控制确认用于验证状态映射，尚不等于真实网络的双向路径挑战与 READY。
 	require.NoError(t, client.ConfirmExternalLoopback(ctx))
 	require.NoError(t, server.ConfirmExternalLoopback(ctx))
-	broker.Discard(result.SessionID)
-	require.Zero(t, broker.Stats().Pending)
 	// 握手中继已关闭；随后仍可双向传输 DATAGRAM。
 	require.NoError(t, client.SendDatagram([]byte("after-https-closed")))
 	packet, err := server.ReceiveDatagram(ctx)
@@ -127,6 +121,13 @@ func TestKEXQUICLoopback(t *testing.T) {
 	packet, err = client.ReceiveDatagram(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []byte("after-https-closed"), packet)
+	lease.Close()
+	require.Zero(t, broker.Stats().Pending)
+	select {
+	case <-server.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("lease did not close pending QUIC connection")
+	}
 	require.False(t, client.ConnectionState().TLS.HandshakeComplete)
 	require.NoError(t, client.CloseWithError(0, "poc complete"))
 }

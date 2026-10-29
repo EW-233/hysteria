@@ -24,21 +24,25 @@ type replayRecord struct {
 	expires  time.Time
 }
 type pendingSession struct {
-	key      replayKey
-	request  requestPayload
-	response responsePayload
-	binding  [32]byte
-	secrets  TrafficSecrets
-	expires  time.Time
+	key           replayKey
+	request       requestPayload
+	response      responsePayload
+	binding       [32]byte
+	secrets       TrafficSecrets
+	expires       time.Time
+	lease         *PendingLease
+	materialTaken bool
+	activating    bool
 }
 
-// Broker 保存有限期认证结果；它不验证 UDP，也不能将会话标记为 ACTIVE。
+// Broker 管理有限期认证和授权租约；UDP AEAD/收发统计仍由可信传输适配提供。
 type Broker struct {
 	mu      sync.Mutex
 	config  ServerConfig
 	devices map[[32]byte]device
 	records map[replayKey]*replayRecord
 	pending map[[16]byte]*pendingSession
+	active  map[[16]byte]*activeSession
 	cids    map[[16]byte][16]byte
 	slots   chan struct{}
 	now     func() time.Time
@@ -47,7 +51,7 @@ type Broker struct {
 	done    chan struct{}
 }
 
-type Stats struct{ Pending, ReplayRecords int }
+type Stats struct{ Pending, ReplayRecords, Activating, Active int }
 
 func NewBroker(cfg ServerConfig) (*Broker, error) { return newBroker(cfg, time.Now) }
 func newBroker(cfg ServerConfig, now func() time.Time) (*Broker, error) {
@@ -69,11 +73,20 @@ func newBroker(cfg ServerConfig, now func() time.Time) (*Broker, error) {
 	if cfg.MaxConcurrent == 0 {
 		cfg.MaxConcurrent = 8
 	}
+	if cfg.MaxActive == 0 {
+		cfg.MaxActive = 128
+	}
+	if cfg.MaxActivePerDevice == 0 {
+		cfg.MaxActivePerDevice = min(8, cfg.MaxActive)
+	}
+	if cfg.MaxActive < 1 || cfg.MaxActive > 4096 || cfg.MaxActivePerDevice < 1 || cfg.MaxActivePerDevice > cfg.MaxActive {
+		return nil, invalidConfig("active limits")
+	}
 	if cfg.MaxPending < 1 || cfg.MaxPending > 4096 || cfg.MaxPendingPerDevice < 1 || cfg.MaxPendingPerDevice > cfg.MaxPending || cfg.MaxReplayRecords < cfg.MaxPending || cfg.MaxReplayRecords > 65536 || cfg.MaxConcurrent < 1 || cfg.MaxConcurrent > 128 {
 		return nil, invalidConfig("limits")
 	}
 	cfg.TransportParameters = bytes.Clone(cfg.TransportParameters)
-	b := &Broker{config: cfg, devices: make(map[[32]byte]device), records: make(map[replayKey]*replayRecord), pending: make(map[[16]byte]*pendingSession), cids: make(map[[16]byte][16]byte), slots: make(chan struct{}, cfg.MaxConcurrent), now: now, stop: make(chan struct{}), done: make(chan struct{})}
+	b := &Broker{config: cfg, devices: make(map[[32]byte]device), records: make(map[replayKey]*replayRecord), pending: make(map[[16]byte]*pendingSession), active: make(map[[16]byte]*activeSession), cids: make(map[[16]byte][16]byte), slots: make(chan struct{}, cfg.MaxConcurrent), now: now, stop: make(chan struct{}), done: make(chan struct{})}
 	go b.collect()
 	return b, nil
 }
@@ -111,7 +124,12 @@ func (b *Broker) RevokeDevice(public [32]byte) error {
 	b.devices[public] = d
 	for id, p := range b.pending {
 		if p.key.device == public {
-			b.removePendingLocked(id)
+			b.removePendingCauseLocked(id, ErrAuthentication)
+		}
+	}
+	for id, a := range b.active {
+		if a.key.device == public {
+			b.removeActiveLocked(id, ErrAuthentication)
 		}
 	}
 	return nil
@@ -232,6 +250,8 @@ func (b *Broker) allocateIDsLocked(p *responsePayload, clientCID [16]byte) error
 			return err
 		}
 		_, sessionExists := b.pending[p.sessionID]
+		_, activeExists := b.active[p.sessionID]
+		sessionExists = sessionExists || activeExists
 		// 过期请求仍保留 session 引用，避免极小概率的碰撞误删另一会话。
 		for _, record := range b.records {
 			if record.session == p.sessionID {
@@ -247,18 +267,30 @@ func (b *Broker) allocateIDsLocked(p *responsePayload, clientCID [16]byte) error
 	return ErrCapacity
 }
 
-// Discard 释放尚未交给 UDP 的会话，但保留拒绝重放所需的记录。
+// Discard 关闭待接入会话及其租约，但保留拒绝重放所需的记录；不关闭活动会话。
 func (b *Broker) Discard(session [16]byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.removePendingLocked(session)
 }
-func (b *Broker) removePendingLocked(id [16]byte) {
+func (b *Broker) removePendingLocked(id [16]byte) { b.removePendingCauseLocked(id, ErrConsumed) }
+
+func (b *Broker) removePendingCauseLocked(id [16]byte, cause error) {
 	p, ok := b.pending[id]
 	if !ok {
 		return
 	}
 	p.secrets.Clear()
+	if p.lease != nil {
+		p.lease.cancel(cause)
+		if p.lease.expiry != nil {
+			p.lease.expiry.Stop()
+		}
+		clear(p.lease.paths)
+		if p.lease.stop != nil {
+			p.lease.stop()
+		}
+	}
 	if record := b.records[p.key]; record != nil {
 		clear(record.response)
 		record.response = nil
@@ -269,7 +301,7 @@ func (b *Broker) removePendingLocked(id [16]byte) {
 func (b *Broker) sweepLocked(now time.Time) {
 	for id, p := range b.pending {
 		if !now.Before(p.expires) {
-			b.removePendingLocked(id)
+			b.removePendingCauseLocked(id, ErrExpired)
 		}
 	}
 	for key, record := range b.records {
@@ -298,7 +330,13 @@ func (b *Broker) Stats() Stats {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.sweepLocked(b.now())
-	return Stats{Pending: len(b.pending), ReplayRecords: len(b.records)}
+	stats := Stats{Pending: len(b.pending), ReplayRecords: len(b.records), Active: len(b.active)}
+	for _, p := range b.pending {
+		if p.activating {
+			stats.Activating++
+		}
+	}
+	return stats
 }
 func (b *Broker) Close() {
 	b.mu.Lock()
@@ -306,7 +344,10 @@ func (b *Broker) Close() {
 		b.closed = true
 		close(b.stop)
 		for id := range b.pending {
-			b.removePendingLocked(id)
+			b.removePendingCauseLocked(id, ErrClosed)
+		}
+		for id := range b.active {
+			b.removeActiveLocked(id, ErrClosed)
 		}
 		clear(b.records)
 		clear(b.devices)

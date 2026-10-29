@@ -29,6 +29,8 @@ var (
 	ErrCapacity       = errors.New("kex: capacity exceeded")
 	ErrClosed         = errors.New("kex: closed")
 	ErrConsumed       = errors.New("kex: handshake already consumed")
+	ErrPath           = errors.New("kex: path verification failed")
+	ErrBudget         = errors.New("kex: unvalidated path budget exceeded")
 	ErrEndpoint       = errors.New("kex: HTTPS endpoint failed")
 )
 
@@ -57,7 +59,7 @@ type ClientConfig struct {
 	MaxRx               uint64
 }
 
-// ServerConfig 的限额限制独立 KEX 状态；不会创建 QUIC 连接或打开代理目标。
+// ServerConfig 分别限制待接入与活动授权状态；Broker 不创建 QUIC 连接或打开代理目标。
 type ServerConfig struct {
 	ServiceID           string
 	PrivateKey          [32]byte
@@ -68,6 +70,8 @@ type ServerConfig struct {
 	MaxPendingPerDevice int
 	MaxReplayRecords    int
 	MaxConcurrent       int
+	MaxActive           int
+	MaxActivePerDevice  int
 }
 
 // TrafficSecrets 保留方向分离的派生结果，不直接暴露为可打印字段。
