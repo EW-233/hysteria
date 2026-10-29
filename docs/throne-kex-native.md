@@ -31,3 +31,18 @@ python scripts/hdm/package-throne-kex.py --config C:/Users/668/.codex/secrets/hd
 生命周期审计确认的 3 个 P2 已修复：接收结束主动清理 UDP 适配器、把会话关闭及写截止取消传到 QUIC DATAGRAM 入队等待、TCP 建连取消时中断写方向。新增接口不改变线上协议，服务端无需更新。
 
 修复后的 QUIC 队列 race 连续 5 轮通过，core/client 与 Throne UDP 适配器 race 各连续 3 轮通过；普通非实验客户端构建与修改包 go vet 通过。最终隔离 workspace 下，kexoutbound 与 boxmain 全包 race 通过（3.527 秒、2.338 秒），完整核心编译成功。TUN/DNS/路由组合仅做 Check 校验，未创建实际虚拟网卡。包内节点的公网验收结果追加于下方。此前 UDP 间歇性超时仍是观察项；该包不承诺解决用户截图中的速度差距。GUI 操作、原生版 TUN 路由接管、睡眠恢复和长时间使用由本轮用户实测继续验证。
+
+## 最终个人包验收（2026-10-29）
+
+- 交付：`build/throne-kex/Throne-KEX-0.9.0-windows-x64.zip`，59,848,703 字节。
+- ZIP SHA256：`fe4530af7d20cfbdcc8f2f0a338c85adfb1d7965e63dafae817eb6abe8da0ec4`。
+- 构建来源：dual-hy2 `d44f89a0`、Throne `030808f1`、sing-box `cc02ae74`、sing-quic `1577e148`。两个仓库原有未提交 `go.work.sum` 保留，构建使用独立 workspace。
+- QUIC 补丁 SHA256：`9dd3ef2a52e8e69316da0ed4f0e824736848c8b9a1485d4ed79bee704a34d7a3`。
+- 原生核心在源码提交后重新构建；这一轮跳过已通过的本地回归，因此 build-info 的 `tests_run:false` 表示本次构建调用未重复测试，不表示之前未测试。
+- 包内文件哈希、ZIP 完整性、SQLite integrity_check 和原生 custom 节点回读全部通过。包内无 ExtraCore 二进制，节点、TUN、系统代理均默认不启动。
+
+公网验收使用从最终数据库回读生成的 `packaged-live.json`。首次请求在约 8 秒后于 `https_exchange` 阶段超时，没有自动重试；与此前成功的节点逐字段比较一致。随后分别对主、备用入口执行绑定物理 IPv4 的 HTTPS 检查，均完成 TLS 并收到 Worker 对 GET `/k` 的预期 405。该检查不带接入令牌。
+
+手动重新运行测试、创建新会话后：一次 KEX 成功，trace 233 字节耗时 2941 ms（含建立）；5,000,000 字节下载耗时 2873 ms；UDP DNS 回复 61 字节，UDP 子测试约 170 ms，完整测试通过。结束测试时的 stream canceled 日志来自主动清理。未因此更换入口、协议参数或开启自动重试。
+
+第一次 HTTPS 超时的根因仍未确定，保留日志 `build/throne-kex/packaged-live-test.log`；成功日志为 `packaged-live-test-second.log`。这证明最终节点可用，不等于长时间稳定性已验证。未启动用户 GUI 或第二个 TUN；下一步由用户退出旧客户端后，在新包里启用 TUN 手测。
