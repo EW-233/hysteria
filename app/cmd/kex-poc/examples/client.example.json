@@ -1,0 +1,19 @@
+{
+  "service_id": "kex-test",
+  "private_key_hex": "REPLACE_WITH_DEVICE_PRIVATE_KEY_HEX",
+  "server_public_key_hex": "REPLACE_WITH_SERVER_PUBLIC_KEY_HEX",
+  "udp_address": "203.0.113.10:20443",
+  "https": {
+    "endpoint": "https://entry.example.com/k",
+    "access_token": "REPLACE_WITH_HTTPS_ACCESS_TOKEN",
+    "ca_pem": "",
+    "entry_ip": ""
+  },
+  "tun": {
+    "name": "kex-poc",
+    "mtu": 1400,
+    "ipv4": "172.31.255.1/30",
+    "ipv6": "fdfe:dcba:9876::1/126"
+  },
+  "bind_address": ""
+}

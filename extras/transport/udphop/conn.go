@@ -49,13 +49,21 @@ type udpHopPacketConn struct {
 
 	bufPool sync.Pool
 	debug   bool
+
+	manual              bool
+	switchOnce          sync.Once
+	switchErr           error
+	previousTimer       *time.Timer
+	relayConn           net.PacketConn
+	readDeadlineChanged chan struct{}
 }
 
 type udpPacket struct {
-	Buf  []byte
-	N    int
-	Addr net.Addr
-	Err  error
+	Buf    []byte
+	N      int
+	Addr   net.Addr
+	Err    error
+	Source net.PacketConn
 }
 
 type ListenUDPFunc = func() (net.PacketConn, error)
@@ -65,30 +73,44 @@ func NewUDPHopPacketConn(addr *UDPHopAddr, hopInterval HopIntervalConfig, listen
 	if err != nil {
 		return nil, err
 	}
-	if listenUDPFunc == nil {
-		listenUDPFunc = func() (net.PacketConn, error) {
-			return net.ListenUDP("udp", nil)
-		}
-	}
 	addrs, err := addr.addrs()
 	if err != nil {
 		return nil, err
+	}
+	conn, err := newPacketConn(addr, addrs, rand.Intn(len(addrs)), hopInterval, listenUDPFunc, false)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// newPacketConn 统一初始化定时跳跃和认证后单次切换的收发资源。
+func newPacketConn(addr net.Addr, addrs []net.Addr, index int, interval HopIntervalConfig, listenUDPFunc ListenUDPFunc, manual bool) (*udpHopPacketConn, error) {
+	if listenUDPFunc == nil {
+		listenUDPFunc = func() (net.PacketConn, error) { return net.ListenUDP("udp", nil) }
 	}
 	curConn, err := listenUDPFunc()
 	if err != nil {
 		return nil, err
 	}
+	return initPacketConn(addr, addrs, index, interval, listenUDPFunc, manual, curConn, false), nil
+}
+
+// initPacketConn 共用队列与旧路径过渡；中继模式额外向上报告当前路径的永久读错误。
+func initPacketConn(addr net.Addr, addrs []net.Addr, index int, interval HopIntervalConfig, listenUDPFunc ListenUDPFunc, manual bool, curConn net.PacketConn, reportReadErrors bool) *udpHopPacketConn {
 	debug, _ := strconv.ParseBool(os.Getenv(debugEnv))
 	hConn := &udpHopPacketConn{
-		Addr:          addr,
-		Addrs:         addrs,
-		HopInterval:   hopInterval,
-		ListenUDPFunc: listenUDPFunc,
-		prevConn:      nil,
-		currentConn:   curConn,
-		addrIndex:     rand.Intn(len(addrs)),
-		recvQueue:     make(chan *udpPacket, packetQueueSize),
-		closeChan:     make(chan struct{}),
+		Addr:                addr,
+		Addrs:               addrs,
+		HopInterval:         interval,
+		ListenUDPFunc:       listenUDPFunc,
+		prevConn:            nil,
+		currentConn:         curConn,
+		addrIndex:           index,
+		manual:              manual,
+		readDeadlineChanged: make(chan struct{}),
+		recvQueue:           make(chan *udpPacket, packetQueueSize),
+		closeChan:           make(chan struct{}),
 		bufPool: sync.Pool{
 			New: func() interface{} {
 				return make([]byte, udpBufferSize)
@@ -96,12 +118,17 @@ func NewUDPHopPacketConn(addr *UDPHopAddr, hopInterval HopIntervalConfig, listen
 		},
 		debug: debug,
 	}
+	if reportReadErrors {
+		hConn.relayConn = curConn
+	}
 	if hConn.debug {
-		hConn.debugPrint("Initialized: local=%s target=%s interval=%s", curConn.LocalAddr(), addr, hopInterval)
+		hConn.debugPrint("Initialized: local=%s target=%s interval=%s", curConn.LocalAddr(), addr, interval)
 	}
 	go hConn.recvLoop(curConn)
-	go hConn.hopLoop()
-	return hConn, nil
+	if !manual {
+		go hConn.hopLoop()
+	}
+	return hConn
 }
 
 func (c HopIntervalConfig) normalized() (HopIntervalConfig, error) {
@@ -126,17 +153,46 @@ func (u *udpHopPacketConn) recvLoop(conn net.PacketConn) {
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
 			u.bufPool.Put(buf)
+			if conn == u.relayConn {
+				// 仅初始中继的帧错误不可恢复；迁移后的UDP必须保留独立错误策略。
+				// 包装后不直接实现 net.Error，防止 QUIC 将半帧超时当作 Temporary 重试。
+				select {
+				case u.recvQueue <- &udpPacket{Err: fmt.Errorf("relay path read failed: %w", err), Source: conn}:
+				case <-u.closeChan:
+				}
+				return
+			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				// Pass through timeout errors, but not permanent errors such as connection closed.
-				// Connection close is normal as we close the old connection to exit this loop every time we hop.
-				u.recvQueue <- &udpPacket{nil, 0, nil, netErr}
+				// 逻辑读期限由ReadFrom独立处理，不排队可能在期限重设后过期的超时。
+				// 已到期时等待期限更新，避免底层socket立即超时形成忙循环。
+				u.connMutex.RLock()
+				deadline, changed := u.readDeadline, u.readDeadlineChanged
+				u.connMutex.RUnlock()
+				if !deadline.IsZero() && !time.Now().Before(deadline) {
+					select {
+					case <-changed:
+					case <-u.closeChan:
+						return
+					}
+				}
 				continue
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			// 超长UDP数据报只丢弃当前报文；Windows的WSAEMSGSIZE不代表socket损坏。
+			if isTruncatedPacketError(err) || (errors.As(err, &netErr) && netErr.Temporary()) {
+				continue
+			}
+			select {
+			case u.recvQueue <- &udpPacket{Err: fmt.Errorf("UDP path read failed: %w", err), Source: conn}:
+			case <-u.closeChan:
 			}
 			return
 		}
 		select {
-		case u.recvQueue <- &udpPacket{buf, n, addr, nil}:
+		case u.recvQueue <- &udpPacket{Buf: buf, N: n, Addr: addr}:
 			// Packet successfully queued
 		default:
 			// Queue is full, drop the packet
@@ -175,13 +231,20 @@ func (u *udpHopPacketConn) hop(hopInterval time.Duration) {
 	if u.closed {
 		return
 	}
+	if err := u.switchLocked(rand.Intn(len(u.Addrs))); err != nil && u.debug {
+		u.debugPrint("Hop after %s skipped: %v", formatHopInterval(hopInterval), err)
+	}
+}
+
+// switchLocked 保留旧 socket 接收迟到包，并在同一逻辑连接内安装新路径。
+// 调用方必须持有 connMutex；新 socket 创建失败时原路径保持可用。
+func (u *udpHopPacketConn) switchLocked(index int) error {
+	if u.closed {
+		return net.ErrClosed
+	}
 	newConn, err := u.ListenUDPFunc()
 	if err != nil {
-		// Could be temporary, just skip this hop
-		if u.debug {
-			u.debugPrint("Hop skipped: listen failed: %v", err)
-		}
-		return
+		return err
 	}
 	// We need to keep receiving packets from the previous connection,
 	// because otherwise there will be packet loss due to the time gap
@@ -213,33 +276,75 @@ func (u *udpHopPacketConn) hop(hopInterval time.Duration) {
 		_ = u.currentConn.SetWriteDeadline(u.writeDeadline)
 	}
 	go u.recvLoop(newConn)
-	// Update addrIndex to a new random value
-	prevRemote := u.Addrs[u.addrIndex]
-	u.addrIndex = rand.Intn(len(u.Addrs))
+	u.addrIndex = index
 	if u.debug {
-		u.debugPrint("Hop after %s: local=%s -> %s remote=%s -> %s",
-			formatHopInterval(hopInterval),
-			u.prevConn.LocalAddr(), u.currentConn.LocalAddr(),
-			prevRemote, u.Addrs[u.addrIndex])
+		u.debugPrint("Socket switched: local=%s target=%s (path unverified)", newConn.LocalAddr(), u.Addrs[index])
+	}
+	return nil
+}
+
+// ReadFrom独立处理期限，接收协程退出后仍可被QUIC关闭流程可靠唤醒。
+func (u *udpHopPacketConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
+	for {
+		u.connMutex.RLock()
+		deadline, changed, closed := u.readDeadline, u.readDeadlineChanged, u.closed
+		u.connMutex.RUnlock()
+		if closed {
+			return 0, nil, net.ErrClosed
+		}
+		var timer *time.Timer
+		var timeout <-chan time.Time
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return 0, nil, os.ErrDeadlineExceeded
+			}
+			timer = time.NewTimer(remaining)
+			timeout = timer.C
+		}
+		var packet *udpPacket
+		select {
+		case packet = <-u.recvQueue:
+		case <-changed:
+			if timer != nil {
+				timer.Stop()
+			}
+			continue
+		case <-timeout:
+			// 与期限延长并发时重新读取状态，不能返回已经被撤销的超时。
+			continue
+		case <-u.closeChan:
+			if timer != nil {
+				timer.Stop()
+			}
+			return 0, nil, net.ErrClosed
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		if packet.Err != nil {
+			if packet.Source != nil {
+				u.connMutex.RLock()
+				current := packet.Source == u.currentConn
+				u.connMutex.RUnlock()
+				if !current {
+					continue
+				}
+			}
+			return 0, nil, packet.Err
+		}
+		n = copy(b, packet.Buf[:packet.N])
+		u.bufPool.Put(packet.Buf)
+		return n, u.Addr, nil
 	}
 }
 
-func (u *udpHopPacketConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
-	for {
-		select {
-		case p := <-u.recvQueue:
-			if p.Err != nil {
-				return 0, nil, p.Err
-			}
-			// Currently we do not check whether the packet is from
-			// the server or not due to performance reasons.
-			n := copy(b, p.Buf[:p.N])
-			u.bufPool.Put(p.Buf)
-			return n, u.Addr, nil
-		case <-u.closeChan:
-			return 0, nil, net.ErrClosed
-		}
+// notifyReadDeadlineLocked广播期限变化，不依赖底层接收协程仍然存活。
+func (u *udpHopPacketConn) notifyReadDeadlineLocked() {
+	if u.readDeadlineChanged != nil {
+		close(u.readDeadlineChanged)
 	}
+	u.readDeadlineChanged = make(chan struct{})
 }
 
 func (u *udpHopPacketConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
@@ -258,6 +363,9 @@ func (u *udpHopPacketConn) Close() error {
 	defer u.connMutex.Unlock()
 	if u.closed {
 		return nil
+	}
+	if u.previousTimer != nil {
+		u.previousTimer.Stop()
 	}
 	// Close prevConn and currentConn
 	// Close closeChan to unblock ReadFrom & hopLoop
@@ -283,6 +391,7 @@ func (u *udpHopPacketConn) SetDeadline(t time.Time) error {
 	defer u.connMutex.Unlock()
 	u.deadline = t
 	u.readDeadline = t
+	u.notifyReadDeadlineLocked()
 	u.writeDeadline = t
 	if u.prevConn != nil {
 		_ = u.prevConn.SetDeadline(t)
@@ -295,6 +404,7 @@ func (u *udpHopPacketConn) SetReadDeadline(t time.Time) error {
 	defer u.connMutex.Unlock()
 	u.deadline = time.Time{}
 	u.readDeadline = t
+	u.notifyReadDeadlineLocked()
 	if u.prevConn != nil {
 		_ = u.prevConn.SetReadDeadline(t)
 	}

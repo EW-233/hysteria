@@ -124,15 +124,26 @@ func realmIPMode(mode string) (realm.AddrFamily, string, error) {
 	}
 }
 
+// clientConfigHandshakeMigration 配置实验性的认证后单次端口切换。
+type clientConfigHandshakeMigration struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	DataPort int    `mapstructure:"dataPort"`
+	Trigger  string `mapstructure:"trigger"`
+	Fallback bool   `mapstructure:"fallback"`
+}
+
 type clientConfigTransportUDP struct {
-	HopInterval    time.Duration `mapstructure:"hopInterval"`
-	MinHopInterval time.Duration `mapstructure:"minHopInterval"`
-	MaxHopInterval time.Duration `mapstructure:"maxHopInterval"`
+	HandshakeMigration clientConfigHandshakeMigration `mapstructure:"handshakeMigration"`
+	HopInterval        time.Duration                  `mapstructure:"hopInterval"`
+	MinHopInterval     time.Duration                  `mapstructure:"minHopInterval"`
+	MaxHopInterval     time.Duration                  `mapstructure:"maxHopInterval"`
 }
 
 type clientConfigTransport struct {
-	Type string                   `mapstructure:"type"`
-	UDP  clientConfigTransportUDP `mapstructure:"udp"`
+	Type      string                   `mapstructure:"type"`
+	UDP       clientConfigTransportUDP `mapstructure:"udp"`
+	Worker    clientConfigWorker       `mapstructure:"worker"`
+	TCPBridge clientConfigTCPBridge    `mapstructure:"tcpBridge"`
 }
 
 type clientConfigObfsSalamander struct {
@@ -279,10 +290,38 @@ func (c *clientConfig) fillConnFactory(hyConfig *client.Config) error {
 	if err != nil {
 		return configError{Field: "transport.udp", Err: err}
 	}
+	if err := c.validateHandshakeMigration(hyConfig.ServerAddr); err != nil {
+		return err
+	}
 	var openInner func() (net.PacketConn, error)
 	switch strings.ToLower(c.Transport.Type) {
+	case "tcpbridge", "worker":
+		openInner, err = c.workerHDMFactory(hyConfig, so.ListenUDP)
+		if err != nil {
+			return err
+		}
 	case "", "udp":
-		if hyConfig.ServerAddr.Network() == "udphop" {
+		if c.Transport.UDP.HandshakeMigration.Enabled {
+			// holder 属于本次配置，工厂打开和认证回调在 connect 中顺序执行。
+			var migration udphop.PostAuthPacketConn
+			openInner = func() (net.PacketConn, error) {
+				conn, err := udphop.NewPostAuthPacketConn(hyConfig.ServerAddr.(*net.UDPAddr), c.Transport.UDP.HandshakeMigration.DataPort, so.ListenUDP)
+				migration = conn
+				return conn, err
+			}
+			hyConfig.OnAuthenticated = func() error {
+				if migration == nil {
+					return errors.New("post-auth transport was not initialized")
+				}
+				if err := migration.SwitchAfterAuth(); err != nil {
+					return err
+				}
+				if logger != nil {
+					logger.Info("post-auth UDP socket switched; data path not yet verified", zap.Int("dataPort", c.Transport.UDP.HandshakeMigration.DataPort))
+				}
+				return nil
+			}
+		} else if hyConfig.ServerAddr.Network() == "udphop" {
 			hopAddr := hyConfig.ServerAddr.(*udphop.UDPHopAddr)
 			openInner = func() (net.PacketConn, error) {
 				return udphop.NewUDPHopPacketConn(hopAddr, hopInterval, so.ListenUDP)
@@ -305,6 +344,10 @@ func (c *clientConfig) fillConnFactory(hyConfig *client.Config) error {
 			if err != nil {
 				_ = conn.Close()
 				return nil, err
+			}
+			if strings.EqualFold(c.Transport.Type, "tcpBridge") || strings.EqualFold(c.Transport.Type, "worker") {
+				// Gecko 也暴露 SyscallConn；中继模式统一选择 QUIC 的通用 PacketConn 路径。
+				return struct{ net.PacketConn }{wrapped}, nil
 			}
 			return wrapped, nil
 		},
@@ -621,6 +664,12 @@ func (c *clientConfig) parseURI() bool {
 // Config validates the fields and returns a ready-to-use Hysteria client config
 func (c *clientConfig) Config() (*client.Config, error) {
 	if realmAddr, ok, err := c.parseRealmAddr(); ok || err != nil {
+		if strings.EqualFold(c.Transport.Type, "tcpBridge") || strings.EqualFold(c.Transport.Type, "worker") {
+			return nil, configError{Field: "transport.type", Err: errors.New("handshake relay does not support realm")}
+		}
+		if c.Transport.UDP.HandshakeMigration.Enabled {
+			return nil, configError{Field: "transport.udp.handshakeMigration", Err: errors.New("realm is not supported")}
+		}
 		if err != nil {
 			return nil, configError{Field: "server", Err: err}
 		}

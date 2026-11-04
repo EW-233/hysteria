@@ -1,0 +1,59 @@
+{
+  "module": "github.com/apernet/quic-go",
+  "version": "v0.63.1-0.20261004180939-a10df75c260c",
+  "sum": "h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=",
+  "files": {
+    "connection.go": {
+      "before": "352857eac915289e4bc5e3ebd7713193b8da7947b1463ec359bb8ea899be4715",
+      "after": "4e11a83845bd3789a99bf600d8b1d4c2fef62100957dff9fc6da6f78bf2273c1"
+    },
+    "transport.go": {
+      "before": "2b0cdde22d35a0763aa8371522f3e86a3339f08cacd7db24980ba6f17127cb0b",
+      "after": "0d4f82b25fb29d07f72b00a377fde409959f21a36bbf974350bc9ec33968df83"
+    },
+    "sys_conn_windows_test.go": {
+      "before": "132ec738c95fa524f0664f99dbdaf75ceda5ff2c48c6b1df8bceac0e31e37cb7",
+      "after": "f25450fade8d2fda4ee05eb7cbf4d92a7dbcdc56a9d700ca0b0efa8d2ce1dc0c"
+    },
+    "external_kex.go": {
+      "before": null,
+      "after": "fe8dafa2e39fbdf1b7a6d27baa2ffe8b6b88b0481ce98010fcaceb831b74c2f1"
+    },
+    "external_kex_test.go": {
+      "before": null,
+      "after": "b7adccc4d697892287479a13d7e373e4a14bcccd0ac3e415f1829a1534ffa203"
+    },
+    "internal/handshake/external_kex.go": {
+      "before": null,
+      "after": "fb40de75ff87163e5128a915e64a2b985890f88d3007b3756b71c7183b2faca9"
+    },
+    "internal/handshake/external_kex_test.go": {
+      "before": null,
+      "after": "f62c8997fa2db916f27732b8c38bd52e7c4ab15e3b5907bfc091e24e116006c1"
+    },
+    "external_path.go": {
+      "before": null,
+      "after": "b3ace88cec49850d2dbeb8f457e45cfa9e16ddb1ea8418cfcf9e5492aa6c0f82"
+    },
+    "closed_conn.go": {
+      "before": "6062abca163d3eaa4034672990b9b70727128e54ba41879c5e0a8b488eb9bd97",
+      "after": "638922ac83f9bf140274b9f1011cc19416f0b8fbeb1cde0de74612133dad9a16"
+    },
+    "closed_conn_test.go": {
+      "before": "db3bb8e7b2be6ed03f7245ff7f3599213cda0f8170b666284a10970f0124f0a0",
+      "after": "f9186a37f6b89488f50d44ead27330dfd2feb9e983edea9e1d1d02ebd91917af"
+    },
+    "external_path_test.go": {
+      "before": null,
+      "after": "b3e57aab8519d359e1342a3e83d21cf489886a390a7f5619ef59f92fcbb62df3"
+    },
+    "external_datagram.go": {
+      "before": null,
+      "after": "6dc9876720bd09bbd2973ca661a25d0a40a7402658bbb2a58fec5775b0a26753"
+    },
+    "external_datagram_test.go": {
+      "before": null,
+      "after": "40a3187726270abe0fd8148acd71f07b56baf7b345bf8c9b3008697f2fe0ee8c"
+    }
+  }
+}

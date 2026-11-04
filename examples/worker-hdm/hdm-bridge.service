@@ -1,0 +1,18 @@
+[Unit]
+Description=HDM local TCP to UDP handshake bridge
+After=network-online.target hysteria-hdm.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/opt/hdm-worker/hdm-bridge -listen 127.0.0.1:18080 -target 127.0.0.1:443
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
