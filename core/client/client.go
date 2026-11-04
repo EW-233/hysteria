@@ -167,6 +167,16 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 	}
 	_ = resp.Body.Close()
 
+	// 认证成功后再切换底层路径，失败时释放本次连接的全部资源。
+	if c.config.OnAuthenticated != nil {
+		if err := c.config.OnAuthenticated(); err != nil {
+			_ = conn.CloseWithError(closeErrCodeOK, "")
+			_ = tr.Close()
+			_ = pktConn.Close()
+			return nil, err
+		}
+	}
+
 	c.pktConn = pktConn
 	c.tr = tr
 	c.conn = conn

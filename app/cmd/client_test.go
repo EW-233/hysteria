@@ -37,11 +37,14 @@ func TestClientConfig(t *testing.T) {
 			},
 		},
 		Transport: clientConfigTransport{
-			Type: "udp",
+			Type:      "udp",
+			Worker:    clientConfigWorker{URL: "wss://worker.example.com/hdm/connect", Token: "test-worker-token-0123456789abcdef", ConnectTimeout: 8 * time.Second, HandshakeTimeout: 10 * time.Second},
+			TCPBridge: clientConfigTCPBridge{Address: "127.0.0.1:18080", ConnectTimeout: 5 * time.Second, HandshakeTimeout: 10 * time.Second},
 			UDP: clientConfigTransportUDP{
-				HopInterval:    30 * time.Second,
-				MinHopInterval: 10 * time.Second,
-				MaxHopInterval: 50 * time.Second,
+				HandshakeMigration: clientConfigHandshakeMigration{Enabled: true, DataPort: 8443, Trigger: "auth_success", Fallback: true},
+				HopInterval:        30 * time.Second,
+				MinHopInterval:     10 * time.Second,
+				MaxHopInterval:     50 * time.Second,
 			},
 		},
 		Obfs: clientConfigObfs{

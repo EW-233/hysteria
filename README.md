@@ -1,3 +1,11 @@
+# Hysteria 握手迁移实验
+
+本仓库提供认证后 UDP 路径迁移、Worker 握手中继与 KEX 实验功能，保留 Hysteria 上游历史、MIT 许可证和作者署名。分支范围与本地配置要求见[源码审核说明](docs/review-guide.md)。
+
+部署参数需由使用者显式提供。文档中的地址和路径为示例，实验记录不代表生产环境安全认证。
+
+---
+
 # ![Hysteria 2](logo.svg)
 
 [![License][1]][2] [![Release][3]][4] [![Telegram][5]][6] [![Discussions][7]][8]

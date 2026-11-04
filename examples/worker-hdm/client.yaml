@@ -1,0 +1,13 @@
+# 仅供同机验证；真实部署必须验证最终 HY2 服务端证书。
+server: 127.0.0.1:24443
+auth: local-worker-poc-only
+tls:
+  insecure: true
+transport:
+  type: tcpBridge
+  tcpBridge:
+    address: 127.0.0.1:18080
+    connectTimeout: 5s
+    handshakeTimeout: 10s
+http:
+  listen: 127.0.0.1:18081

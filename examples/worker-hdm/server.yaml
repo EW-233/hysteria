@@ -1,0 +1,8 @@
+# 从仓库根目录运行；使用仓库原有测试证书，只监听回环地址。
+listen: 127.0.0.1:24443
+tls:
+  cert: core/internal/integration_tests/test.crt
+  key: core/internal/integration_tests/test.key
+auth:
+  type: password
+  password: local-worker-poc-only

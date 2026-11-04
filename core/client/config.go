@@ -26,7 +26,10 @@ type Config struct {
 	QUICConfig       QUICConfig
 	CongestionConfig CongestionConfig
 	BandwidthConfig  BandwidthConfig
-	FastOpen         bool
+	// OnAuthenticated 在收到 HTTP 233 后同步调用；失败会关闭本次连接。
+	// 回调不应阻塞；返回成功仅表示本地操作完成，不表示新路径已验证。
+	OnAuthenticated func() error
+	FastOpen        bool
 
 	filled bool // whether the fields have been verified and filled
 }

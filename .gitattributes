@@ -1,0 +1,2 @@
+# Linux 部署脚本在 Windows 检出时也保留 LF。
+scripts/hdm/*.sh text eol=lf
